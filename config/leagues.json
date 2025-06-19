@@ -1,0 +1,13 @@
+[
+  { "id": 39, "name": "English Premier League" },
+  { "id": 140, "name": "La Liga (Spain)" },
+  { "id": 135, "name": "Serie A (Italy)" },
+  { "id": 78, "name": "Bundesliga (Germany)" },
+  { "id": 253, "name": "MLS (USA)" },
+  { "id": 61, "name": "Ligue 1 (France)" },
+  { "id": 307, "name": "Saudi Professional League" },
+  { "id": 203, "name": "Süper Lig (Turkey)" },
+  { "id": 1, "name": "World Cup" },
+  { "id": 4, "name": "Africa Cup of Nations" },
+  { "id": 15, "name": "Club World Cup" }
+]

@@ -1,0 +1,17 @@
+{
+  "default_ranking": 75,
+  "teams": {
+    "manchester united": 88,
+    "chelsea": 86,
+    "real madrid": 92,
+    "barcelona": 90,
+    "bayern munich": 93,
+    "borussia dortmund": 85,
+    "kano pillars": 78,
+    "enyimba fc": 80,
+    "al ahly": 82,
+    "inter miami": 84,
+    "paris saint-germain f.c.": 89,
+    "atlético de madrid": 87
+  }
+}
