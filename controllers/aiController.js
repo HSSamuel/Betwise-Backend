@@ -7,17 +7,14 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
 const bettingService = require("../services/bettingService");
-const newsService = require("../services/newsService"); // <-- IMPORT news service
-const aiService = require("../services/aiService"); // <-- IMPORT AI service
 const {
   generateRecommendations,
 } = require("../services/recommendationService");
-const config = require("../config/env");
 
-if (!config.GEMINI_API_KEY) {
+if (!process.env.GEMINI_API_KEY) {
   throw new Error("GEMINI_API_KEY is not defined in the .env file.");
 }
-const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // In-memory cache for sports news
 const newsCache = {
@@ -27,9 +24,8 @@ const newsCache = {
 };
 
 const formatTransactionsForPrompt = (transactions) => {
-  if (!transactions || transactions.length === 0) {
+  if (!transactions || transactions.length === 0)
     return "No recent transactions found.";
-  }
   return transactions
     .map(
       (t, index) =>
@@ -41,26 +37,36 @@ const formatTransactionsForPrompt = (transactions) => {
 };
 
 const formatBetsForPrompt = (bets) => {
-  if (!bets || bets.length === 0) {
-    return "No recent bets found.";
-  }
+  if (!bets || bets.length === 0) return "No recent bets found.";
   return bets
     .map((bet, index) => {
       const betDetails =
         bet.selections && bet.selections.length > 0
           ? bet.selections
-              .map((s) => {
-                if (!s.game) {
-                  return "[Game data unavailable]";
-                }
-                return `${s.game.homeTeam} vs ${s.game.awayTeam} (Your pick: ${s.outcome})`;
-              })
+              .map((s) =>
+                s.game
+                  ? `${s.game.homeTeam} vs ${s.game.awayTeam} (Your pick: ${s.outcome})`
+                  : "[Game data unavailable]"
+              )
               .join(" | ")
           : "Details unavailable";
       return `${index + 1}. Stake: $${bet.stake.toFixed(2)}, Status: ${
         bet.status
       }, Details: ${betDetails}`;
     })
+    .join("\n  ");
+};
+
+const formatResultsForPrompt = (games) => {
+  if (!games || games.length === 0)
+    return "No recent results found in the database.";
+  return games
+    .map(
+      (game) =>
+        `- ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${
+          game.awayTeam
+        } (League: ${game.league}, Date: ${game.matchDate.toDateString()})`
+    )
     .join("\n  ");
 };
 
@@ -76,12 +82,14 @@ exports.validateNewsQuery = [
 // --- Controller functions ---
 exports.getRecommendedGames = async (req, res, next) => {
   try {
-    const recommendations = await generateRecommendations(req.user._id);
+    const userId = req.user._id;
+    const recommendations = await generateRecommendations(userId);
     res.status(200).json({
       message: "Successfully fetched personalized game recommendations.",
       games: recommendations,
     });
   } catch (error) {
+    console.error("Error in getRecommendedGames:", error);
     next(error);
   }
 };
@@ -104,11 +112,9 @@ exports.handleChat = async (req, res, next) => {
   try {
     let { message, history = [], context = null } = req.body;
     context = context || {};
-
     if (!message) {
       return res.status(400).json({ msg: 'A "message" field is required.' });
     }
-
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
@@ -158,46 +164,34 @@ exports.handleChat = async (req, res, next) => {
       .limit(10)
       .lean();
 
-    const systemPrompt = `You are an advanced, multi-turn conversational AI for the "BetWise" app. The user is "${
+    const systemPrompt = `You are an advanced, multi-turn conversational AI for "BetWise". The user is "${
       user.username
-    }".
-    Your goal is to be a helpful and accurate assistant.
-
-    CURRENT CONTEXT:
-    ${JSON.stringify(context, null, 2)}
-
-    USER'S LIVE ACCOUNT DATA:
-    - Wallet Balance: $${user.walletBalance.toFixed(2)}
-    - Recent Bets: ${formatBetsForPrompt(recentBets)}
-    - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
-    - Pending Withdrawal: ${withdrawalStatus}
-
-    RECENT GAME RESULTS FROM DATABASE:
-    ${formatResultsForPrompt(recentResults)}
-
-    YOUR TASK:
-    1.  Analyze the user's message: "${message}".
-    2.  **Crucially, if the user asks for a game result, you MUST check the "RECENT GAME RESULTS FROM DATABASE" list first. If the game is in the list, provide the score from that list.**
-    3.  Only if the game result is NOT in the list should you state that you don't have the information.
-    4.  If the user wants to place a bet, identify the team and stake, and respond by asking for confirmation. Return a JSON object with "newContext.conversationState" set to "confirming_bet" and include a "betSlip" object.
-    5.  If you provide a list of games, add the list to "newContext.gameList" so you can refer to it in the next turn.
-    6.  If it's a general question about the user's account, answer it using the "USER'S LIVE ACCOUNT DATA".
-    7.  Return a JSON object with "reply" (your text response to the user) and a "newContext" object.
-
-    Return ONLY the JSON object.`;
+    }". Your goal is to be helpful and accurate.
+      CURRENT CONTEXT: ${JSON.stringify(context, null, 2)}
+      USER'S LIVE DATA:
+      - Wallet Balance: $${user.walletBalance.toFixed(2)}
+      - Recent Bets: ${formatBetsForPrompt(recentBets)}
+      - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
+      - Pending Withdrawal: ${withdrawalStatus}
+      RECENT GAME RESULTS:
+      ${formatResultsForPrompt(recentResults)}
+      YOUR TASK:
+      1. Analyze the user's message: "${message}".
+      2. If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If the game is there, provide the score.
+      3. Only if the result is NOT in the list, state you don't have the information.
+      4. If you identify a bet intent, ask for confirmation and return a JSON with "newContext.conversationState": "confirming_bet" and a "betSlip".
+      Return ONLY the JSON object.`;
 
     const result = await model.generateContent(systemPrompt);
     const rawAiText = result.response.text();
-    const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
+    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
 
     if (!jsonMatch || !jsonMatch[0]) {
       return res.json({
-        reply:
-          "Sorry, I had a little trouble understanding that. Could you rephrase?",
-        context: context,
+        reply: "Sorry, I had a little trouble. Could you rephrase?",
+        context,
       });
     }
-
     const aiResponse = JSON.parse(jsonMatch[0]);
 
     if (
@@ -210,7 +204,6 @@ exports.handleChat = async (req, res, next) => {
         status: "upcoming",
         $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
       });
-
       if (game) {
         aiResponse.newContext.betSlip = {
           gameId: game._id,
@@ -219,11 +212,10 @@ exports.handleChat = async (req, res, next) => {
           oddsAtTimeOfBet: game.odds,
         };
       } else {
-        aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}. Please be more specific.`;
+        aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
         aiResponse.newContext = {};
       }
     }
-
     return res.json({
       reply: aiResponse.reply,
       context: aiResponse.newContext || {},
@@ -555,32 +547,63 @@ exports.getNewsSummary = async (req, res, next) => {
 };
 
 exports.analyzeGame = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    // This can be replaced by the validation middleware later
-    return res.status(400).json({ errors: errors.array() });
-  }
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
     const { gameId } = req.body;
-    // The controller simply calls the service
-    const analysis = await aiService.analyzeGame(gameId);
-    res.status(200).json({ analysis });
+    const game = await Game.findById(gameId);
+    if (!game) {
+      return res.status(404).json({ msg: "Game not found." });
+    }
+    if (game.status !== "upcoming") {
+      return res
+        .status(400)
+        .json({ msg: "AI analysis is only available for upcoming games." });
+    }
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
+    const result = await model.generateContent(prompt);
+    res.status(200).json({ analysis: result.response.text().trim() });
   } catch (error) {
+    console.error("AI game analysis error:", error);
     next(error);
   }
 };
 
+let newsCache = { data: null, timestamp: null };
+const CACHE_DURATION_MS = 3600000; // 1 hour
+
 exports.getGeneralSportsNews = async (req, res, next) => {
   try {
-    // The controller simply calls the service
-    const newsData = await newsService.fetchGeneralSportsNews();
-    if (!newsData.news || newsData.news.length === 0) {
-      return res.status(404).json({
-        message: "Could not find any recent sports news.",
-      });
+    const now = Date.now();
+    if (newsCache.data && now - newsCache.timestamp < CACHE_DURATION_MS) {
+      return res.status(200).json(newsCache.data);
     }
-    res.status(200).json(newsData);
+    const apiKey = process.env.GOOGLE_API_KEY;
+    const cseId = process.env.GOOGLE_CSE_ID;
+    if (!apiKey || !cseId) {
+      throw new Error("Google Search API Key or CSE ID is not configured.");
+    }
+    const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}&q=top+world+football+news`;
+    const searchResponse = await axios.get(searchUrl);
+    if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "Could not find any recent sports news." });
+    }
+    const newsItems = searchResponse.data.items.slice(0, 5).map((item) => ({
+      title: item.title,
+      link: item.link,
+      snippet: item.snippet,
+      source: item.displayLink,
+    }));
+    const responseData = { news: newsItems };
+    newsCache = { data: responseData, timestamp: now };
+    res.status(200).json(responseData);
   } catch (error) {
+    console.error("General sports news error:", error.message);
     next(error);
   }
 };
