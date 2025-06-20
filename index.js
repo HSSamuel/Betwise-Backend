@@ -28,14 +28,11 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg =
-        "The CORS policy for this site does not allow access from the specified Origin.";
-      return callback(new Error(msg), false);
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
     }
-    return callback(null, true);
   },
   credentials: true,
 };
@@ -52,7 +49,7 @@ app.use((req, res, next) => {
 
 // --- Essential Middleware ---
 app.use(helmet());
-app.use(cors(corsOptions)); // Use the new flexible options
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
@@ -122,7 +119,8 @@ const startServer = async () => {
   try {
     await connectDB();
     const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => {
+    server.listen(PORT, "0.0.0.0", () => {
+      // Explicitly listen on 0.0.0.0 for Render
       console.log(
         `🚀 Server running on port ${PORT} in ${
           process.env.NODE_ENV || "development"

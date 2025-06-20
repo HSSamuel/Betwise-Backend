@@ -11,17 +11,20 @@ const {
   generateRecommendations,
 } = require("../services/recommendationService");
 
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY is not defined in the .env file.");
-}
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// This global variable will hold the initialized AI client.
+let genAI;
 
-// In-memory cache for sports news
-const newsCache = {
-  data: null,
-  timestamp: null,
-  TTL: 15 * 60 * 1000, // Cache Time-To-Live: 15 minutes
-};
+try {
+  if (!process.env.GEMINI_API_KEY) {
+    console.error(
+      "GEMINI_API_KEY is not defined. AI features will be disabled."
+    );
+  } else {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  }
+} catch (e) {
+  console.error("Could not initialize GoogleGenerativeAI. Check API Key.", e);
+}
 
 const formatTransactionsForPrompt = (transactions) => {
   if (!transactions || transactions.length === 0)
@@ -79,7 +82,12 @@ exports.validateNewsQuery = [
     .withMessage("Topic must be between 3 and 50 characters."),
 ];
 
+exports.validateAnalyzeGame = [
+  body("gameId").isMongoId().withMessage("A valid gameId is required."),
+];
+
 // --- Controller functions ---
+
 exports.getRecommendedGames = async (req, res, next) => {
   try {
     const userId = req.user._id;
@@ -94,22 +102,10 @@ exports.getRecommendedGames = async (req, res, next) => {
   }
 };
 
-const formatResultsForPrompt = (games) => {
-  if (!games || games.length === 0) {
-    return "No recent results found in the database.";
-  }
-  return games
-    .map(
-      (game) =>
-        `- ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${
-          game.awayTeam
-        } (League: ${game.league}, Date: ${game.matchDate.toDateString()})`
-    )
-    .join("\n  ");
-};
-
 exports.handleChat = async (req, res, next) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+
     let { message, history = [], context = null } = req.body;
     context = context || {};
     if (!message) {
@@ -228,28 +224,24 @@ exports.handleChat = async (req, res, next) => {
 
 exports.parseBetIntent = async (req, res, next) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const { message: text } = req.body;
     if (!text) return null;
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `From the user's text, extract betting information into a valid JSON object. The JSON object must have "stake" (number) and "teamToBetOn" (string).
-
-    Here are some examples:
-    - User text: "I want to put 500 on manchester united to win"
-    - JSON: { "stake": 500, "teamToBetOn": "Manchester United" }
-
-    - User text: "bet $25 on Real Madrid"
-    - JSON: { "stake": 25, "teamToBetOn": "Real Madrid" }
-
-    - User text: "Can you place a hundred on chelsea for me"
-    - JSON: { "stake": 100, "teamToBetOn": "Chelsea" }
-
-    Now, analyze this user's text and return only the JSON object: "${text}"`;
+        Here are some examples:
+        - User text: "I want to put 500 on manchester united to win"
+        - JSON: { "stake": 500, "teamToBetOn": "Manchester United" }
+        - User text: "bet $25 on Real Madrid"
+        - JSON: { "stake": 25, "teamToBetOn": "Real Madrid" }
+        - User text: "Can you place a hundred on chelsea for me"
+        - JSON: { "stake": 100, "teamToBetOn": "Chelsea" }
+        Now, analyze this user's text and return only the JSON object: "${text}"`;
 
     const result = await model.generateContent(prompt);
     const rawAiText = result.response.text();
     const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
-
     if (!jsonMatch || !jsonMatch[0]) return null;
 
     const intent = JSON.parse(jsonMatch[0]);
@@ -291,6 +283,7 @@ exports.parseBetIntent = async (req, res, next) => {
 
 exports.generateGameSummary = async (homeTeam, awayTeam, league) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `You are a sports writer for a betting app called "BetWise". Write a short, exciting, and neutral 1-2 sentence match preview for an upcoming game in the "${league}" between "${homeTeam}" (home) and "${awayTeam}" (away). Do not predict a winner.`;
     const result = await model.generateContent(prompt);
@@ -301,28 +294,25 @@ exports.generateGameSummary = async (homeTeam, awayTeam, league) => {
   }
 };
 
-exports.validateAnalyzeGame = [
-  body("gameId").isMongoId().withMessage("A valid gameId is required."),
-];
-
 exports.analyzeGame = async (req, res, next) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
     const { gameId } = req.body;
     const game = await Game.findById(gameId);
     if (!game) {
-      const err = new Error("Game not found.");
-      err.statusCode = 404;
-      return next(err);
+      return res.status(404).json({ msg: "Game not found." });
     }
     if (game.status !== "upcoming") {
-      const err = new Error(
-        "AI analysis is only available for upcoming games."
-      );
-      err.statusCode = 400;
-      return next(err);
+      return res
+        .status(400)
+        .json({ msg: "AI analysis is only available for upcoming games." });
     }
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `You are a neutral sports analyst. Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} (Home) and ${game.awayTeam} (Away) in the ${game.league}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
+    const prompt = `Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
     const result = await model.generateContent(prompt);
     res.status(200).json({ analysis: result.response.text().trim() });
   } catch (error) {
@@ -333,6 +323,7 @@ exports.analyzeGame = async (req, res, next) => {
 
 exports.getBettingFeedback = async (req, res, next) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const userId = req.user._id;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const recentBets = await Bet.find({
@@ -366,6 +357,7 @@ exports.getBettingFeedback = async (req, res, next) => {
 
 exports.generateLimitSuggestion = async (req, res, next) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const userId = req.user._id;
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
@@ -417,14 +409,15 @@ exports.generateLimitSuggestion = async (req, res, next) => {
 };
 
 exports.searchGamesWithAI = async (req, res, next) => {
-  const { query } = req.body;
-  if (!query) {
-    const err = new Error("A search query is required.");
-    err.statusCode = 400;
-    return next(err);
-  }
-
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+    const { query } = req.body;
+    if (!query) {
+      const err = new Error("A search query is required.");
+      err.statusCode = 400;
+      return next(err);
+    }
+
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const prompt = `
@@ -495,9 +488,10 @@ exports.searchGamesWithAI = async (req, res, next) => {
 
 exports.getNewsSummary = async (req, res, next) => {
   try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const { topic } = req.body;
-    const apiKey = config.GOOGLE_API_KEY;
-    const cseId = config.GOOGLE_CSE_ID;
+    const apiKey = process.env.GOOGLE_API_KEY;
+    const cseId = process.env.GOOGLE_CSE_ID;
 
     if (!apiKey || !cseId) {
       throw new Error(
@@ -538,42 +532,13 @@ exports.getNewsSummary = async (req, res, next) => {
 
     res.status(200).json({ summary: summaryText });
   } catch (error) {
-    console.error(
-      "AI news summary error:",
-      error.response ? error.response.data : error.message
-    );
     next(error);
   }
 };
 
-exports.analyzeGame = async (req, res, next) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-    const { gameId } = req.body;
-    const game = await Game.findById(gameId);
-    if (!game) {
-      return res.status(404).json({ msg: "Game not found." });
-    }
-    if (game.status !== "upcoming") {
-      return res
-        .status(400)
-        .json({ msg: "AI analysis is only available for upcoming games." });
-    }
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
-    const result = await model.generateContent(prompt);
-    res.status(200).json({ analysis: result.response.text().trim() });
-  } catch (error) {
-    console.error("AI game analysis error:", error);
-    next(error);
-  }
-};
-
+// Caching logic remains the same
 let newsCache = { data: null, timestamp: null };
-const CACHE_DURATION_MS = 3600000; // 1 hour
+const CACHE_DURATION_MS = 3600000;
 
 exports.getGeneralSportsNews = async (req, res, next) => {
   try {
@@ -581,6 +546,7 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     if (newsCache.data && now - newsCache.timestamp < CACHE_DURATION_MS) {
       return res.status(200).json(newsCache.data);
     }
+
     const apiKey = process.env.GOOGLE_API_KEY;
     const cseId = process.env.GOOGLE_CSE_ID;
     if (!apiKey || !cseId) {
@@ -603,7 +569,6 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     newsCache = { data: responseData, timestamp: now };
     res.status(200).json(responseData);
   } catch (error) {
-    console.error("General sports news error:", error.message);
     next(error);
   }
 };
