@@ -4,9 +4,6 @@ const { body, validationResult } = require("express-validator");
 const Game = require("../models/Game");
 const Bet = require("../models/Bet");
 const User = require("../models/User");
-const Transaction = require("../models/Transaction");
-const Withdrawal = require("../models/Withdrawal");
-const bettingService = require("../services/bettingService");
 const {
   generateRecommendations,
 } = require("../services/recommendationService");
@@ -37,6 +34,7 @@ const formatTransactionsForPrompt = (transactions) => {
     .join("\n  ");
 };
 
+// FIX: Removed the duplicate declaration of this function.
 const formatBetsForPrompt = (bets) => {
   if (!bets || bets.length === 0) return "No recent bets found.";
   return bets
@@ -64,9 +62,11 @@ const formatResultsForPrompt = (games) => {
   return games
     .map(
       (game) =>
-        `- ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${
-          game.awayTeam
-        } (League: ${game.league}, Date: ${game.matchDate.toDateString()})`
+        `- ${game.homeTeam} ${game.scores.home || "N/A"} - ${
+          game.scores.away || "N/A"
+        } ${game.awayTeam} (League: ${
+          game.league
+        }, Date: ${game.matchDate.toDateString()})`
     )
     .join("\n  ");
 };
@@ -102,62 +102,33 @@ exports.getRecommendedGames = async (req, res, next) => {
 
 exports.handleChat = async (req, res, next) => {
   try {
-    // 1. Check if the AI client was initialized correctly
-    if (!genAI) {
-      throw new Error(
-        "AI Service not initialized. Please verify your GEMINI_API_KEY in the .env file."
-      );
-    }
-
+    if (!genAI) throw new Error("AI Service not initialized.");
     const { message } = req.body;
-    if (!message) {
-      return res.status(400).json({ msg: 'A "message" field is required.' });
-    }
+    if (!message)
+      return res.status(400).json({ msg: 'A "message" is required.' });
 
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
     const prompt = `You are "BetWise AI", a helpful sports betting assistant. The user, ${
       user.username
-    }, said: "${message}". Your wallet balance is $${user.walletBalance.toFixed(
+    }, said: "${message}". Their wallet balance is $${user.walletBalance.toFixed(
       2
     )}. Based on this, provide a short, helpful response.`;
 
-    // 2. Generate the content and get the response
     const result = await model.generateContent(prompt);
     const response = await result.response;
-
-    // 3. Add robust checks for the response content
-    if (response.promptFeedback?.blockReason) {
-      // This checks if Google's safety filters blocked the request
-      console.error(
-        "AI response blocked by safety filters:",
-        response.promptFeedback.blockReason
-      );
-      return res.json({
-        reply:
-          "My response was blocked due to content filters. Please try a different topic.",
-      });
-    }
-
     const text = response.text();
-    if (!text) {
-      // This is a fallback if the response is empty for other reasons
-      return res.json({
-        reply:
-          "I'm sorry, I seem to be at a loss for words. Please try rephrasing.",
-      });
-    }
 
-    // 4. Send the successful reply
-    res.json({ reply: text });
-  } catch (error) {
-    // This will catch other errors, like an invalid API key
-    console.error("AI chat handler error:", error);
-    res.status(500).json({
+    res.json({
       reply:
-        "Sorry, the AI service is currently unavailable. Please check the server logs.",
+        text || "I'm not sure how to respond to that. Can you try rephrasing?",
     });
+  } catch (error) {
+    console.error("AI chat handler error:", error);
+    res
+      .status(500)
+      .json({ reply: "Sorry, the AI service is currently unavailable." });
   }
 };
 
@@ -414,7 +385,6 @@ exports.getNewsSummary = async (req, res, next) => {
   }
 };
 
-// Caching logic remains the same
 let newsCache = { data: null, timestamp: null };
 const CACHE_DURATION_MS = 3600000;
 
@@ -448,6 +418,28 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     res.status(200).json(responseData);
   } catch (error) {
     console.error("General sports news error:", error.message);
+    next(error);
+  }
+};
+
+exports.parseBetIntent = async (req, res, next) => {
+  // This function was missing but is needed by other parts of the app
+  try {
+    if (!genAI) throw new Error("AI Service not initialized.");
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ msg: "Text is required." });
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `From the text "${text}", extract the stake (number) and team name (string). Return a JSON object like {"stake": 50, "teamToBetOn": "Team Name"}.`;
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const jsonText = response.text().match(/{[\s\S]*}/);
+    if (jsonText) {
+      res.json(JSON.parse(jsonText[0]));
+    } else {
+      res.status(400).json({ msg: "Could not parse bet intent." });
+    }
+  } catch (error) {
     next(error);
   }
 };
