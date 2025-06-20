@@ -1,4 +1,6 @@
-const config = require("./config/env");
+// In: Backend/index.js
+
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -11,20 +13,35 @@ require("./config/passport-setup");
 const cron = require("node-cron");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
-const { fetchAndSyncGames } = require("./services/sportsDataService");
+const { syncGames } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
-const { syncGames, syncLiveGames } = require("./services/sportsDataService");
-const errorHandler = require("./middleware/errorMiddleware"); // <-- IMPORT the new middleware
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: config.FRONTEND_URL,
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Authorization", "Content-Type"],
-    credentials: true,
+
+// --- FIX: A more robust and flexible CORS configuration ---
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://betwise-frontend-5uqq.vercel.app",
+  "https://betwise-frontend-5uqq-hunsa-semakos-projects.vercel.app",
+];
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg =
+        "The CORS policy for this site does not allow access from the specified Origin.";
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
   },
+  credentials: true,
+};
+
+const io = new Server(server, {
+  cors: corsOptions,
 });
 
 app.set("json spaces", 2);
@@ -35,9 +52,9 @@ app.use((req, res, next) => {
 
 // --- Essential Middleware ---
 app.use(helmet());
-app.use(cors({ origin: config.FRONTEND_URL }));
+app.use(cors(corsOptions)); // Use the new flexible options
 app.use(express.json());
-app.use(morgan(config.NODE_ENV === "development" ? "dev" : "combined"));
+app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
 // --- Rate Limiting Setup ---
 const generalApiLimiter = rateLimit({
@@ -48,7 +65,7 @@ const generalApiLimiter = rateLimit({
 });
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: config.API_RATE_LIMIT_MAX,
+  max: parseInt(process.env.API_RATE_LIMIT_MAX) || 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
@@ -75,8 +92,7 @@ io.use((socket, next) => {
   if (!token) {
     return next(new Error("Authentication error: Token not provided."));
   }
-  jwt.verify(token, config.JWT_SECRET, (err, decoded) => {
-    // <-- USE config
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
       return next(new Error("Authentication error: Invalid token."));
     }
@@ -105,29 +121,21 @@ io.on("connection", (socket) => {
 const startServer = async () => {
   try {
     await connectDB();
-    const PORT = config.PORT; // <-- USE config
+    const PORT = process.env.PORT || 5000;
     server.listen(PORT, () => {
       console.log(
-        `🚀 Server running on port ${PORT} in ${config.NODE_ENV} mode.` // <-- USE config
+        `🚀 Server running on port ${PORT} in ${
+          process.env.NODE_ENV || "development"
+        } mode.`
       );
 
-      // Fetch from API-Football once every hour
-      cron.schedule("0 * * * *", () => {
+      cron.schedule("*/30 * * * *", () => {
         console.log("🕒 Cron: Fetching upcoming games from API-Football...");
         syncGames("apifootball");
       });
-
-      // Fetch from TheSportsDB once every two hours
-      cron.schedule("0 */2 * * *", () => {
+      cron.schedule("0 */6 * * *", () => {
         console.log("🕒 Cron: Fetching upcoming games from TheSportsDB...");
         syncGames("thesportsdb");
-      });
-
-      // FIX: Add a new cron job to fetch LIVE game data every minute
-      cron.schedule("* * * * *", () => {
-        console.log("🕒 Cron: Fetching LIVE game data...");
-        // Pass the io instance so the service can emit updates
-        syncLiveGames(io);
       });
 
       console.log("✅ All background tasks have been scheduled.");
@@ -141,9 +149,8 @@ const startServer = async () => {
   }
 };
 
-if (config.NODE_ENV !== "test") {
-  // <-- USE config
+if (process.env.NODE_ENV !== "test") {
   startServer();
 }
 
-app.use(errorHandler); // <-- USE the new middleware
+module.exports = app;
