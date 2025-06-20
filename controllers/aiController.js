@@ -229,9 +229,6 @@ exports.analyzeGame = async (req, res, next) => {
   }
 };
 
-let newsCache = { data: null, timestamp: null };
-const CACHE_DURATION_MS = 3600000;
-
 exports.getBettingFeedback = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
