@@ -102,33 +102,128 @@ exports.getRecommendedGames = async (req, res, next) => {
 
 exports.handleChat = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized.");
-    const { message } = req.body;
-    if (!message)
-      return res.status(400).json({ msg: 'A "message" is required.' });
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
 
+    let { message, history = [], context = null } = req.body;
+    context = context || {};
+    if (!message) {
+      return res.status(400).json({ msg: 'A "message" field is required.' });
+    }
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const prompt = `You are "BetWise AI", a helpful sports betting assistant. The user, ${
-      user.username
-    }, said: "${message}". Your wallet balance is $${user.walletBalance.toFixed(
-      2
-    )}. Based on this, provide a short and helpful response.`;
+    // State machine for handling multi-turn conversations like confirming a bet
+    if (context.conversationState === "confirming_bet") {
+      if (
+        ["yes", "y", "correct", "ok", "yep"].includes(
+          message.toLowerCase().trim()
+        )
+      ) {
+        const betData = context.betSlip;
+        await bettingService.placeSingleBetTransaction(
+          user._id,
+          betData.gameId,
+          betData.outcome,
+          betData.stake
+        );
+        return res.json({
+          reply: "I've placed that bet for you! Good luck!",
+          context: {},
+        });
+      } else {
+        return res.json({
+          reply: "Okay, I've cancelled that bet. Anything else?",
+          context: {},
+        });
+      }
+    }
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
+    // Fetch fresh data from the database to give the AI context
+    const recentBets = await Bet.find({ user: user._id })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .populate("selections.game", "homeTeam awayTeam")
+      .lean();
+    const recentTransactions = await Transaction.find({ user: user._id })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .lean();
+    const pendingWithdrawal = await Withdrawal.findOne({
+      user: user._id,
+      status: "pending",
+    }).lean();
+    const withdrawalStatus = pendingWithdrawal
+      ? `Yes, $${pendingWithdrawal.amount.toFixed(2)} is pending.`
+      : "No.";
+    const recentResults = await Game.find({ status: "finished" })
+      .sort({ matchDate: -1 })
+      .limit(10)
+      .lean();
+
+    // A much more detailed prompt for the AI
+    const systemPrompt = `You are an advanced, multi-turn conversational AI for "BetWise". The user is "${
+      user.username
+    }". Your goal is to be helpful and accurate.
+      CURRENT CONTEXT: ${JSON.stringify(context, null, 2)}
+      USER'S LIVE DATA:
+      - Wallet Balance: $${user.walletBalance.toFixed(2)}
+      - Recent Bets: ${formatBetsForPrompt(recentBets)}
+      - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
+      - Pending Withdrawal: ${withdrawalStatus}
+      RECENT GAME RESULTS:
+      ${formatResultsForPrompt(recentResults)}
+      YOUR TASK:
+      1. Analyze the user's message: "${message}".
+      2. If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If the game is there, provide the score.
+      3. Only if the result is NOT in the list, state you don't have the information.
+      4. If you identify a bet intent, ask for confirmation and return a JSON with "newContext.conversationState": "confirming_bet" and a "betSlip".
+      Return ONLY the JSON object.`;
+
+    const result = await model.generateContent(systemPrompt);
+    const rawAiText = result.response.text();
+    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
+
+    if (!jsonMatch || !jsonMatch[0]) {
+      return res.json({
+        reply: "Sorry, I had a little trouble. Could you rephrase?",
+        context,
+      });
+    }
+    const aiResponse = JSON.parse(jsonMatch[0]);
+
+    // If the AI identified a bet, find the game details before responding
+    if (
+      aiResponse.newContext?.conversationState === "confirming_bet" &&
+      aiResponse.newContext.betSlip.teamToBetOn
+    ) {
+      const intent = aiResponse.newContext.betSlip;
+      const teamRegex = new RegExp(intent.teamToBetOn, "i");
+      const game = await Game.findOne({
+        status: "upcoming",
+        $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
+      });
+      if (game) {
+        aiResponse.newContext.betSlip = {
+          gameId: game._id,
+          stake: intent.stake,
+          outcome: game.homeTeam.match(teamRegex) ? "A" : "B",
+          oddsAtTimeOfBet: game.odds,
+        };
+      } else {
+        aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
+        aiResponse.newContext = {};
+      }
+    }
 
     res.json({
       reply:
-        text || "I'm not sure how to respond to that. Can you try rephrasing?",
+        aiResponse.reply ||
+        "I'm not sure how to respond to that. Please try again.",
+      context: aiResponse.newContext || {},
     });
   } catch (error) {
     console.error("AI chat handler error:", error);
-    res
-      .status(500)
-      .json({ reply: "Sorry, the AI service is currently unavailable." });
+    next(error);
   }
 };
 
