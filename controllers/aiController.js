@@ -11,9 +11,7 @@ const {
   generateRecommendations,
 } = require("../services/recommendationService");
 
-// This global variable will hold the initialized AI client.
 let genAI;
-
 try {
   if (!process.env.GEMINI_API_KEY) {
     console.error(
@@ -104,121 +102,33 @@ exports.getRecommendedGames = async (req, res, next) => {
 
 exports.handleChat = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+    if (!genAI) throw new Error("AI Service not initialized.");
+    const { message } = req.body;
+    if (!message)
+      return res.status(400).json({ msg: 'A "message" is required.' });
 
-    let { message, history = [], context = null } = req.body;
-    context = context || {};
-    if (!message) {
-      return res.status(400).json({ msg: 'A "message" field is required.' });
-    }
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    if (context.conversationState === "confirming_bet") {
-      if (
-        ["yes", "y", "correct", "ok", "yep"].includes(
-          message.toLowerCase().trim()
-        )
-      ) {
-        const betData = context.betSlip;
-        await bettingService.placeSingleBetTransaction(
-          user._id,
-          betData.gameId,
-          betData.outcome,
-          betData.stake
-        );
-        return res.json({
-          reply: "I've placed that bet for you! Good luck!",
-          context: {},
-        });
-      } else {
-        return res.json({
-          reply: "Okay, I've cancelled that bet. Anything else?",
-          context: {},
-        });
-      }
-    }
-
-    const recentBets = await Bet.find({ user: user._id })
-      .sort({ createdAt: -1 })
-      .limit(3)
-      .populate("selections.game", "homeTeam awayTeam")
-      .lean();
-    const recentTransactions = await Transaction.find({ user: user._id })
-      .sort({ createdAt: -1 })
-      .limit(3)
-      .lean();
-    const pendingWithdrawal = await Withdrawal.findOne({
-      user: user._id,
-      status: "pending",
-    }).lean();
-    const withdrawalStatus = pendingWithdrawal
-      ? `Yes, $${pendingWithdrawal.amount.toFixed(2)} is pending.`
-      : "No.";
-    const recentResults = await Game.find({ status: "finished" })
-      .sort({ matchDate: -1 })
-      .limit(10)
-      .lean();
-
-    const systemPrompt = `You are an advanced, multi-turn conversational AI for "BetWise". The user is "${
+    const prompt = `You are "BetWise AI", a helpful sports betting assistant. The user, ${
       user.username
-    }". Your goal is to be helpful and accurate.
-      CURRENT CONTEXT: ${JSON.stringify(context, null, 2)}
-      USER'S LIVE DATA:
-      - Wallet Balance: $${user.walletBalance.toFixed(2)}
-      - Recent Bets: ${formatBetsForPrompt(recentBets)}
-      - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
-      - Pending Withdrawal: ${withdrawalStatus}
-      RECENT GAME RESULTS:
-      ${formatResultsForPrompt(recentResults)}
-      YOUR TASK:
-      1. Analyze the user's message: "${message}".
-      2. If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If the game is there, provide the score.
-      3. Only if the result is NOT in the list, state you don't have the information.
-      4. If you identify a bet intent, ask for confirmation and return a JSON with "newContext.conversationState": "confirming_bet" and a "betSlip".
-      Return ONLY the JSON object.`;
+    }, said: "${message}". Your wallet balance is $${user.walletBalance.toFixed(
+      2
+    )}. Based on this, provide a short and helpful response.`;
 
-    const result = await model.generateContent(systemPrompt);
-    const rawAiText = result.response.text();
-    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
 
-    if (!jsonMatch || !jsonMatch[0]) {
-      return res.json({
-        reply: "Sorry, I had a little trouble. Could you rephrase?",
-        context,
-      });
-    }
-    const aiResponse = JSON.parse(jsonMatch[0]);
-
-    if (
-      aiResponse.newContext?.conversationState === "confirming_bet" &&
-      aiResponse.newContext.betSlip.teamToBetOn
-    ) {
-      const intent = aiResponse.newContext.betSlip;
-      const teamRegex = new RegExp(intent.teamToBetOn, "i");
-      const game = await Game.findOne({
-        status: "upcoming",
-        $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
-      });
-      if (game) {
-        aiResponse.newContext.betSlip = {
-          gameId: game._id,
-          stake: intent.stake,
-          outcome: game.homeTeam.match(teamRegex) ? "A" : "B",
-          oddsAtTimeOfBet: game.odds,
-        };
-      } else {
-        aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
-        aiResponse.newContext = {};
-      }
-    }
-    return res.json({
-      reply: aiResponse.reply,
-      context: aiResponse.newContext || {},
+    res.json({
+      reply:
+        text || "I'm not sure how to respond to that. Can you try rephrasing?",
     });
   } catch (error) {
     console.error("AI chat handler error:", error);
-    next(error);
+    res
+      .status(500)
+      .json({ reply: "Sorry, the AI service is currently unavailable." });
   }
 };
 
@@ -296,21 +206,19 @@ exports.generateGameSummary = async (homeTeam, awayTeam, league) => {
 
 exports.analyzeGame = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+    if (!genAI) throw new Error("AI Service not initialized.");
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
+    if (!errors.isEmpty())
       return res.status(400).json({ errors: errors.array() });
-    }
+
     const { gameId } = req.body;
     const game = await Game.findById(gameId);
-    if (!game) {
-      return res.status(404).json({ msg: "Game not found." });
-    }
-    if (game.status !== "upcoming") {
+    if (!game) return res.status(404).json({ msg: "Game not found." });
+    if (game.status !== "upcoming")
       return res
         .status(400)
         .json({ msg: "AI analysis is only available for upcoming games." });
-    }
+
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
     const result = await model.generateContent(prompt);
@@ -320,6 +228,9 @@ exports.analyzeGame = async (req, res, next) => {
     next(error);
   }
 };
+
+let newsCache = { data: null, timestamp: null };
+const CACHE_DURATION_MS = 3600000;
 
 exports.getBettingFeedback = async (req, res, next) => {
   try {
@@ -546,12 +457,11 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     if (newsCache.data && now - newsCache.timestamp < CACHE_DURATION_MS) {
       return res.status(200).json(newsCache.data);
     }
-
     const apiKey = process.env.GOOGLE_API_KEY;
     const cseId = process.env.GOOGLE_CSE_ID;
-    if (!apiKey || !cseId) {
+    if (!apiKey || !cseId)
       throw new Error("Google Search API Key or CSE ID is not configured.");
-    }
+
     const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}&q=top+world+football+news`;
     const searchResponse = await axios.get(searchUrl);
     if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
@@ -559,6 +469,7 @@ exports.getGeneralSportsNews = async (req, res, next) => {
         .status(404)
         .json({ message: "Could not find any recent sports news." });
     }
+
     const newsItems = searchResponse.data.items.slice(0, 5).map((item) => ({
       title: item.title,
       link: item.link,
@@ -569,6 +480,7 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     newsCache = { data: responseData, timestamp: now };
     res.status(200).json(responseData);
   } catch (error) {
+    console.error("General sports news error:", error.message);
     next(error);
   }
 };

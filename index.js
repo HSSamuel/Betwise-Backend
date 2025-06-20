@@ -36,7 +36,8 @@ const corsOptions = {
   },
   credentials: true,
 };
-
+// --- Apply CORS to both Express and Socket.IO ---
+app.use(cors(corsOptions));
 const io = new Server(server, {
   cors: corsOptions,
 });
@@ -46,6 +47,10 @@ app.use((req, res, next) => {
   req.io = io;
   next();
 });
+
+app.use(helmet());
+app.use(express.json());
+app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
 // --- Essential Middleware ---
 app.use(helmet());
