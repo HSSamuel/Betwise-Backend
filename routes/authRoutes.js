@@ -7,7 +7,9 @@ const {
 const { auth } = require("../middleware/authMiddleware");
 const passport = require("passport");
 
+// This route now correctly uses the imported auth and authController.getMe
 router.get("/me", auth, authController.getMe);
+
 router.post(
   "/register",
   authController.validateRegister,
@@ -34,6 +36,7 @@ router.post(
   handleValidationErrors,
   authController.resetPassword
 );
+
 router.get(
   "/google",
   passport.authenticate("google", { scope: ["profile", "email"] })

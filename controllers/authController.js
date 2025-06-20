@@ -1,31 +1,22 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const nodemailer = require("nodemailer");
 const { body, validationResult } = require("express-validator");
 const User = require("../models/User");
 const TokenBlacklist = require("../models/TokenBlacklist");
-const { sendEmail } = require("../services/emailService"); // <-- IMPORT from new service
-const config = require("../config/env"); // <-- IMPORT the new config
+const { sendEmail } = require("../services/emailService");
 
 // --- Helper Functions ---
 const generateAccessToken = (user) => {
   const payload = { id: user._id, role: user.role, username: user.username };
-  return jwt.sign(payload, config.JWT_SECRET, {
-    // <-- USE config
-    expiresIn: config.JWT_EXPIRES_IN, // <-- USE config
-  });
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
 };
 
 const generateRefreshToken = (user) => {
   const payload = { id: user._id, username: user.username };
-  return jwt.sign(payload, config.JWT_REFRESH_SECRET, {
-    // <-- USE config
-    expiresIn: config.JWT_REFRESH_EXPIRES_IN, // <-- USE config
-  });
+  return jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" });
 };
 
-// --- Validation Rules ---
 // --- Validation Rules ---
 exports.validateRegister = [
   body("username")
@@ -39,14 +30,7 @@ exports.validateRegister = [
     .normalizeEmail(),
   body("password")
     .isLength({ min: 6 })
-    .withMessage("Password must be at least 6 characters long.")
-    // FIX: Add password complexity enforcement
-    .matches(
-      /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{6,}$/
-    )
-    .withMessage(
-      "Password must contain at least one uppercase letter, one lowercase letter, one number, and one special character."
-    ),
+    .withMessage("Password must be at least 6 characters long."),
   body("firstName")
     .trim()
     .notEmpty()
@@ -57,7 +41,6 @@ exports.validateRegister = [
     .notEmpty()
     .withMessage("Last name is required.")
     .escape(),
-  body("state").optional().trim().escape(),
 ];
 exports.validateLogin = [
   body("email")
@@ -85,6 +68,18 @@ exports.validateResetPassword = [
 ];
 
 // --- Controller Functions ---
+
+exports.getMe = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id).select("-password");
+    if (!user) {
+      return res.status(404).json({ msg: "User not found." });
+    }
+    res.status(200).json(user);
+  } catch (error) {
+    next(error);
+  }
+};
 
 exports.register = async (req, res, next) => {
   const errors = validationResult(req);
