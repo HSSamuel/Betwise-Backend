@@ -102,187 +102,62 @@ exports.getRecommendedGames = async (req, res, next) => {
 
 exports.handleChat = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+    // 1. Check if the AI client was initialized correctly
+    if (!genAI) {
+      throw new Error(
+        "AI Service not initialized. Please verify your GEMINI_API_KEY in the .env file."
+      );
+    }
 
-    let { message, history = [], context = null } = req.body;
-    context = context || {};
+    const { message } = req.body;
     if (!message) {
       return res.status(400).json({ msg: 'A "message" field is required.' });
     }
+
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    // State machine for handling multi-turn conversations like confirming a bet
-    if (context.conversationState === "confirming_bet") {
-      if (
-        ["yes", "y", "correct", "ok", "yep"].includes(
-          message.toLowerCase().trim()
-        )
-      ) {
-        const betData = context.betSlip;
-        await bettingService.placeSingleBetTransaction(
-          user._id,
-          betData.gameId,
-          betData.outcome,
-          betData.stake
-        );
-        return res.json({
-          reply: "I've placed that bet for you! Good luck!",
-          context: {},
-        });
-      } else {
-        return res.json({
-          reply: "Okay, I've cancelled that bet. Anything else?",
-          context: {},
-        });
-      }
-    }
-
-    // Fetch fresh data from the database to give the AI context
-    const recentBets = await Bet.find({ user: user._id })
-      .sort({ createdAt: -1 })
-      .limit(3)
-      .populate("selections.game", "homeTeam awayTeam")
-      .lean();
-    const recentTransactions = await Transaction.find({ user: user._id })
-      .sort({ createdAt: -1 })
-      .limit(3)
-      .lean();
-    const pendingWithdrawal = await Withdrawal.findOne({
-      user: user._id,
-      status: "pending",
-    }).lean();
-    const withdrawalStatus = pendingWithdrawal
-      ? `Yes, $${pendingWithdrawal.amount.toFixed(2)} is pending.`
-      : "No.";
-    const recentResults = await Game.find({ status: "finished" })
-      .sort({ matchDate: -1 })
-      .limit(10)
-      .lean();
-
-    // A much more detailed prompt for the AI
-    const systemPrompt = `You are an advanced, multi-turn conversational AI for "BetWise". The user is "${
+    const prompt = `You are "BetWise AI", a helpful sports betting assistant. The user, ${
       user.username
-    }". Your goal is to be helpful and accurate.
-      CURRENT CONTEXT: ${JSON.stringify(context, null, 2)}
-      USER'S LIVE DATA:
-      - Wallet Balance: $${user.walletBalance.toFixed(2)}
-      - Recent Bets: ${formatBetsForPrompt(recentBets)}
-      - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
-      - Pending Withdrawal: ${withdrawalStatus}
-      RECENT GAME RESULTS:
-      ${formatResultsForPrompt(recentResults)}
-      YOUR TASK:
-      1. Analyze the user's message: "${message}".
-      2. If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If the game is there, provide the score.
-      3. Only if the result is NOT in the list, state you don't have the information.
-      4. If you identify a bet intent, ask for confirmation and return a JSON with "newContext.conversationState": "confirming_bet" and a "betSlip".
-      Return ONLY the JSON object.`;
+    }, said: "${message}". Your wallet balance is $${user.walletBalance.toFixed(
+      2
+    )}. Based on this, provide a short, helpful response.`;
 
-    const result = await model.generateContent(systemPrompt);
-    const rawAiText = result.response.text();
-    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
-
-    if (!jsonMatch || !jsonMatch[0]) {
-      return res.json({
-        reply: "Sorry, I had a little trouble. Could you rephrase?",
-        context,
-      });
-    }
-    const aiResponse = JSON.parse(jsonMatch[0]);
-
-    // If the AI identified a bet, find the game details before responding
-    if (
-      aiResponse.newContext?.conversationState === "confirming_bet" &&
-      aiResponse.newContext.betSlip.teamToBetOn
-    ) {
-      const intent = aiResponse.newContext.betSlip;
-      const teamRegex = new RegExp(intent.teamToBetOn, "i");
-      const game = await Game.findOne({
-        status: "upcoming",
-        $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
-      });
-      if (game) {
-        aiResponse.newContext.betSlip = {
-          gameId: game._id,
-          stake: intent.stake,
-          outcome: game.homeTeam.match(teamRegex) ? "A" : "B",
-          oddsAtTimeOfBet: game.odds,
-        };
-      } else {
-        aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
-        aiResponse.newContext = {};
-      }
-    }
-
-    res.json({
-      reply:
-        aiResponse.reply ||
-        "I'm not sure how to respond to that. Please try again.",
-      context: aiResponse.newContext || {},
-    });
-  } catch (error) {
-    console.error("AI chat handler error:", error);
-    next(error);
-  }
-};
-
-exports.parseBetIntent = async (req, res, next) => {
-  try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
-    const { message: text } = req.body;
-    if (!text) return null;
-
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `From the user's text, extract betting information into a valid JSON object. The JSON object must have "stake" (number) and "teamToBetOn" (string).
-        Here are some examples:
-        - User text: "I want to put 500 on manchester united to win"
-        - JSON: { "stake": 500, "teamToBetOn": "Manchester United" }
-        - User text: "bet $25 on Real Madrid"
-        - JSON: { "stake": 25, "teamToBetOn": "Real Madrid" }
-        - User text: "Can you place a hundred on chelsea for me"
-        - JSON: { "stake": 100, "teamToBetOn": "Chelsea" }
-        Now, analyze this user's text and return only the JSON object: "${text}"`;
-
+    // 2. Generate the content and get the response
     const result = await model.generateContent(prompt);
-    const rawAiText = result.response.text();
-    const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch || !jsonMatch[0]) return null;
+    const response = await result.response;
 
-    const intent = JSON.parse(jsonMatch[0]);
-    if (!intent.stake || !intent.teamToBetOn) return null;
-
-    const teamToBetOnRegex = new RegExp(intent.teamToBetOn, "i");
-    const game = await Game.findOne({
-      status: "upcoming",
-      $or: [{ homeTeam: teamToBetOnRegex }, { awayTeam: teamToBetOnRegex }],
-    });
-
-    if (game) {
-      const outcome = game.homeTeam
-        .toLowerCase()
-        .includes(intent.teamToBetOn.toLowerCase())
-        ? "A"
-        : "B";
-      return {
-        reply: `I found a match: ${game.homeTeam} vs ${
-          game.awayTeam
-        }. You want to bet $${
-          intent.stake
-        } on ${intent.teamToBetOn.toLowerCase()} to win. Is this correct? (yes/no)`,
-        betSlip: {
-          gameId: game._id,
-          gameDetails: { homeTeam: game.homeTeam, awayTeam: game.awayTeam },
-          stake: intent.stake,
-          outcome: outcome,
-          oddsAtTimeOfBet: game.odds,
-        },
-      };
+    // 3. Add robust checks for the response content
+    if (response.promptFeedback?.blockReason) {
+      // This checks if Google's safety filters blocked the request
+      console.error(
+        "AI response blocked by safety filters:",
+        response.promptFeedback.blockReason
+      );
+      return res.json({
+        reply:
+          "My response was blocked due to content filters. Please try a different topic.",
+      });
     }
-    return null;
+
+    const text = response.text();
+    if (!text) {
+      // This is a fallback if the response is empty for other reasons
+      return res.json({
+        reply:
+          "I'm sorry, I seem to be at a loss for words. Please try rephrasing.",
+      });
+    }
+
+    // 4. Send the successful reply
+    res.json({ reply: text });
   } catch (error) {
-    console.error("AI parseBetIntent error:", error);
-    return null;
+    // This will catch other errors, like an invalid API key
+    console.error("AI chat handler error:", error);
+    res.status(500).json({
+      reply:
+        "Sorry, the AI service is currently unavailable. Please check the server logs.",
+    });
   }
 };
 
