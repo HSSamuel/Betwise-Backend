@@ -237,42 +237,33 @@ exports.refreshToken = async (req, res, next) => {
   }
 };
 
+// --- FIX: Corrected Social Login Callback with your URL ---
 exports.socialLoginCallback = async (req, res, next) => {
   try {
     const user = req.user;
-
     if (!user) {
+      // If authentication fails, redirect to the frontend login page with an error
       return res
         .status(401)
-        .redirect(`${config.FRONTEND_URL}/login?error=auth_failed`); // <-- USE config
+        .redirect(
+          `https://betwise-frontend-5uqq.vercel.app/login?error=auth_failed`
+        );
     }
-    // 1. Generate Tokens
-    const accessToken = user.generateAuthToken();
-    const refreshToken = user.generateRefreshToken();
 
-    // ... (cookie options)
-    const cookieOptions = {
-      httpOnly: true,
-      secure: config.NODE_ENV === "production", // <-- USE config
-      sameSite: "Strict",
-    };
+    // Use the correct helper functions to generate tokens
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
 
-    res.cookie("accessToken", accessToken, {
-      ...cookieOptions,
-      maxAge: 15 * 60 * 1000, // 15 minutes
-    });
-
-    res.cookie("refreshToken", refreshToken, {
-      ...cookieOptions,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
-
-    // 3. Instead of tokens, redirect to a dedicated success page
-    // The frontend will use this page to confirm the login status.
-    res.redirect(`${config.FRONTEND_URL}/social-auth-success`); // <-- USE config
+    // Redirect to a dedicated frontend page with the tokens in the URL query
+    res.redirect(
+      `https://betwise-frontend-5uqq.vercel.app/social-auth-success?accessToken=${accessToken}&refreshToken=${refreshToken}`
+    );
   } catch (error) {
     console.error("Social login callback error:", error);
-    res.redirect(`${config.FRONTEND_URL}/login?error=server_error`); // <-- USE config
+    // On server error, also redirect to the frontend login page
+    res.redirect(
+      `https://betwise-frontend-5uqq.vercel.app/login?error=server_error`
+    );
   }
 };
 
