@@ -87,22 +87,30 @@ app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
 app.use(`${apiVersion}/aviator`, require("./routes/aviatorRoutes"));
 
-// This middleware is the gatekeeper for all socket connections.
+// --- THIS IS THE FINAL FIX FOR THE BACKEND ---
+// The middleware now sends a more detailed error object to the client.
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
+
   if (!token) {
-    return next(new Error("Authentication error: Token not provided."));
+    console.error("Socket Auth Error: No token provided.");
+    const err = new Error("Authentication error: Token not provided.");
+    err.data = { code: "NO_TOKEN" };
+    return next(err);
   }
+
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
-      return next(new Error("Authentication error: Invalid token."));
+      console.error(`Socket Auth Error: Invalid token. Reason: ${err.message}`);
+      const newErr = new Error("Authentication error: Invalid token.");
+      newErr.data = { code: "INVALID_TOKEN", reason: err.message };
+      return next(newErr);
     }
     socket.user = decoded;
     next();
   });
 });
 
-// This block handles events for each successfully connected client.
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
 
@@ -135,7 +143,6 @@ io.on("connection", (socket) => {
   });
 });
 
-// This function starts the entire server and should only be called once.
 const startServer = async () => {
   try {
     await connectDB();
