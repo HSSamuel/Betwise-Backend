@@ -33,13 +33,12 @@ const corsOptions = {
   credentials: true,
 };
 
-// ** CRITICAL FIX **: Apply CORS middleware at the very beginning.
-// This ensures that the preflight OPTIONS request is handled before any other middleware or routing.
+// Apply CORS middleware to all incoming requests
 app.use(cors(corsOptions));
 
 const io = new Server(server, {
   cors: corsOptions,
-  path: "/betwise-socket/",
+  path: "/betwise-socket/", // Use the custom path for Socket.IO
 });
 // --- END: Definitive CORS and Server Configuration ---
 
@@ -58,6 +57,9 @@ app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
+// Create a dedicated router for all versioned API endpoints
+const apiRouter = express.Router();
+
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
@@ -75,9 +77,7 @@ const authLimiter = rateLimit({
   },
 });
 
-// Use a dedicated router for all API endpoints to ensure clean separation
-const apiRouter = express.Router();
-
+// Apply middleware and routes to the dedicated API router
 apiRouter.use("/auth", authLimiter, require("./routes/authRoutes"));
 apiRouter.use("/games", generalApiLimiter, require("./routes/gameRoutes"));
 apiRouter.use("/bets", generalApiLimiter, require("./routes/betRoutes"));
@@ -87,7 +87,7 @@ apiRouter.use("/users", generalApiLimiter, require("./routes/userRoutes"));
 apiRouter.use("/ai", generalApiLimiter, require("./routes/aiRoutes"));
 apiRouter.use("/aviator", generalApiLimiter, require("./routes/aviatorRoutes"));
 
-// Mount the entire API under the /api/v1 prefix
+// Mount the entire API router under a single '/api/v1' prefix
 app.use("/api/v1", apiRouter);
 
 // --- Socket.IO Middleware and Connection Handling ---
@@ -111,7 +111,7 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
-
+  
   const sendCurrentLiveGames = async () => {
     try {
       const liveGames = await Game.find({
