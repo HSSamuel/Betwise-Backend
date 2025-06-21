@@ -35,6 +35,16 @@ exports.placeBet = async (req, res, next) => {
     return next(err);
   }
 
+  // --- FIX: Add a guard clause to ensure a game round exists ---
+  if (!aviatorService.currentGame) {
+    const err = new Error(
+      "Cannot place bet. The game round has not started yet."
+    );
+    err.statusCode = 400;
+    return next(err);
+  }
+  // --- END FIX ---
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -99,6 +109,16 @@ exports.cashOut = async (req, res, next) => {
     err.statusCode = 400;
     return next(err);
   }
+
+  // --- FIX: Add a guard clause to ensure a game round exists ---
+  if (!aviatorService.currentGame) {
+    const err = new Error(
+      "Cannot cash out. The game round has not started yet."
+    );
+    err.statusCode = 400;
+    return next(err);
+  }
+  // --- END FIX ---
 
   const session = await mongoose.startSession();
   session.startTransaction();
