@@ -21,8 +21,7 @@ const AviatorService = require("./services/aviatorService");
 const app = express();
 const server = http.createServer(app);
 
-// --- START OF FINAL FIX: CORS and ROUTING RESTRUCTURE ---
-
+// --- START: CORS and Server Configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
@@ -30,26 +29,24 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: allowedOrigins,
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
   credentials: true,
 };
 
-// Use CORS for all incoming requests
+// Apply CORS to all incoming requests from the allowed origins
 app.use(cors(corsOptions));
 
 const io = new Server(server, {
   cors: corsOptions,
-  path: "/betwise-socket/",
+  path: "/betwise-socket/", // Use the custom path for Socket.IO
 });
-
-// Create a dedicated router for all versioned API endpoints
-const apiRouter = express.Router();
+// --- END: CORS and Server Configuration ---
 
 const aviatorService = new AviatorService(io);
 if (process.env.NODE_ENV !== "test") {
   aviatorService.start();
 }
 
-app.set("json spaces", 2);
 app.use((req, res, next) => {
   req.io = io;
   req.aviatorService = aviatorService;
@@ -60,12 +57,16 @@ app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
+// --- START OF FINAL FIX: Dedicated API Router ---
+const apiRouter = express.Router();
+
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
 });
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: parseInt(process.env.API_RATE_LIMIT_MAX) || 100,
@@ -76,7 +77,7 @@ const authLimiter = rateLimit({
   },
 });
 
-// Apply rate limiters to the dedicated API router
+// Apply middleware and routes to the dedicated API router
 apiRouter.use("/auth", authLimiter, require("./routes/authRoutes"));
 apiRouter.use("/games", generalApiLimiter, require("./routes/gameRoutes"));
 apiRouter.use("/bets", generalApiLimiter, require("./routes/betRoutes"));
@@ -86,11 +87,9 @@ apiRouter.use("/users", generalApiLimiter, require("./routes/userRoutes"));
 apiRouter.use("/ai", generalApiLimiter, require("./routes/aiRoutes"));
 apiRouter.use("/aviator", generalApiLimiter, require("./routes/aviatorRoutes"));
 
-// Mount the dedicated API router at /api/v1
+// Mount the entire API router under a single '/api/v1' prefix
 app.use("/api/v1", apiRouter);
-
 // --- END OF FINAL FIX ---
-
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
@@ -112,7 +111,7 @@ io.use((socket, next) => {
 
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
-  
+
   const sendCurrentLiveGames = async () => {
     try {
       const liveGames = await Game.find({
