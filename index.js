@@ -38,9 +38,9 @@ const corsOptions = {
   credentials: true,
 };
 
-app.use(cors(corsOptions));
 const io = new Server(server, {
   cors: corsOptions,
+  path: "/betwise-socket/", // Define a custom path
 });
 
 const aviatorService = new AviatorService(io);
