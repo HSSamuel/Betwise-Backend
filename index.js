@@ -74,7 +74,7 @@ const authLimiter = rateLimit({
 
 const apiVersion = "/api/v1";
 
-// --- START OF FIX: Apply limiters to each route individually ---
+// --- START OF FINAL FIX: Apply limiters to each route individually ---
 app.use(`${apiVersion}/auth`, authLimiter, require("./routes/authRoutes"));
 app.use(
   `${apiVersion}/games`,
@@ -103,7 +103,7 @@ app.use(
   generalApiLimiter,
   require("./routes/aviatorRoutes")
 );
-// --- END OF FIX ---
+// --- END OF FINAL FIX ---
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
