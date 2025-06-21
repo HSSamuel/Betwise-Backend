@@ -37,9 +37,9 @@ const corsOptions = {
   credentials: true,
 };
 
+app.use(cors(corsOptions));
 const io = new Server(server, {
   cors: corsOptions,
-  path: "/api/v1/socket.io/",
 });
 
 // Create and start the Aviator game instance
