@@ -21,26 +21,37 @@ const AviatorService = require("./services/aviatorService");
 const app = express();
 const server = http.createServer(app);
 
+// --- START OF FIX: CORS CONFIGURATION ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
-  "https://betwise-frontend-5uqq-hunsa-semakos-projects.vercel.app",
 ];
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg =
+        "The CORS policy for this site does not allow access from the specified Origin.";
+      return callback(new Error(msg), false);
     }
+    return callback(null, true);
   },
   credentials: true,
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  preflightContinue: true, // Pass the preflight request to the next handler
 };
+
+// ** CRITICAL **: Use CORS as one of the first pieces of middleware.
+// This handles the preflight 'OPTIONS' request.
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions)); // Enable pre-flight for all routes
+// --- END OF FIX ---
 
 const io = new Server(server, {
   cors: corsOptions,
-  path: "/betwise-socket/", // Define a custom path
+  path: "/betwise-socket/",
 });
 
 const aviatorService = new AviatorService(io);
@@ -87,24 +98,14 @@ app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
 app.use(`${apiVersion}/aviator`, require("./routes/aviatorRoutes"));
 
-// --- THIS IS THE FINAL FIX FOR THE BACKEND ---
-// The middleware now sends a more detailed error object to the client.
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
-
   if (!token) {
-    console.error("Socket Auth Error: No token provided.");
-    const err = new Error("Authentication error: Token not provided.");
-    err.data = { code: "NO_TOKEN" };
-    return next(err);
+    return next(new Error("Authentication error: Token not provided."));
   }
-
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
-      console.error(`Socket Auth Error: Invalid token. Reason: ${err.message}`);
-      const newErr = new Error("Authentication error: Invalid token.");
-      newErr.data = { code: "INVALID_TOKEN", reason: err.message };
-      return next(newErr);
+      return next(new Error("Authentication error: Invalid token."));
     }
     socket.user = decoded;
     next();
@@ -122,7 +123,6 @@ io.on("connection", (socket) => {
           { status: "upcoming", matchDate: { $lte: new Date() } },
         ],
       });
-      // Emit an event with the full list of live games only to the user who just connected.
       socket.emit("allLiveGames", liveGames);
     } catch (error) {
       console.error("Error fetching initial live games for socket:", error);
