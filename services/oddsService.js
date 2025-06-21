@@ -1,23 +1,21 @@
-const rankings = require("./team-rankings.json");
+// In: Bet/Backend/services/oddsService.js
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const config = require("../config/env"); // <-- IMPORT the new config
+const config = require("../config/env");
+const TeamRanking = require("../models/TeamRanking"); // Import the Mongoose model
 
 if (!config.GEMINI_API_KEY) {
-  // <-- USE config
   throw new Error("GEMINI_API_KEY is not defined in the .env file.");
 }
-const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY); // <-- USE config
+const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
 
 const BASE_ODDS = 5.0;
 const RANKING_SENSITIVITY = 0.05;
-const RISK_ADJUSTMENT_FACTOR = 0.02; // How much liability affects odds
+const RISK_ADJUSTMENT_FACTOR = 0.02;
+const DEFAULT_RANKING = 75; // Define a default ranking
 
 /**
  * Interprets a news summary to determine its impact on a game's outcome.
- * @param {string} newsSummary - A summary of recent news about the teams.
- * @param {string} homeTeam - The name of the home team.
- * @param {string} awayTeam - The name of the away team.
- * @returns {Promise<object>} An object with adjustment factors, e.g., { home: 1.0, away: 1.0, draw: 1.0 }
+ * This function remains unchanged.
  */
 const analyzeNewsImpact = async (newsSummary, homeTeam, awayTeam) => {
   if (!newsSummary) {
@@ -72,18 +70,24 @@ const generateOddsForGame = async (
   );
   const { riskAnalysis, newsSummary } = options;
 
-  // 1. Base odds from team rankings
-  const homeRank =
-    rankings.teams[homeTeamName.toLowerCase()] || rankings.default_ranking;
-  const awayRank =
-    rankings.teams[awayTeamName.toLowerCase()] || rankings.default_ranking;
+  // 1. Base odds from team rankings (fetched from the database)
+  const homeTeamRankDoc = await TeamRanking.findOne({
+    teamName_lower: homeTeamName.toLowerCase(),
+  });
+  const awayTeamRankDoc = await TeamRanking.findOne({
+    teamName_lower: awayTeamName.toLowerCase(),
+  });
+
+  const homeRank = homeTeamRankDoc ? homeTeamRankDoc.ranking : DEFAULT_RANKING;
+  const awayRank = awayTeamRankDoc ? awayTeamRankDoc.ranking : DEFAULT_RANKING;
+
   const rankDifference = homeRank - awayRank;
 
   let homeOdds = BASE_ODDS - rankDifference * RANKING_SENSITIVITY;
   let awayOdds = BASE_ODDS + rankDifference * RANKING_SENSITIVITY;
   let drawOdds = 2.5 + Math.abs(rankDifference) * (RANKING_SENSITIVITY / 2);
 
-  // 2. Adjust odds based on platform risk (liability)
+  // 2. Adjust odds based on platform risk (liability) - unchanged
   if (riskAnalysis) {
     const totalLiability =
       (riskAnalysis.A?.totalPotentialPayout || 0) +
@@ -95,14 +99,13 @@ const generateOddsForGame = async (
       const awayLiability = riskAnalysis.B?.totalPotentialPayout || 0;
       const drawLiability = riskAnalysis.Draw?.totalPotentialPayout || 0;
 
-      // Lower the odds for outcomes with high liability to discourage more bets on them
       homeOdds -= (homeLiability / totalLiability) * RISK_ADJUSTMENT_FACTOR;
       awayOdds -= (awayLiability / totalLiability) * RISK_ADJUSTMENT_FACTOR;
       drawOdds -= (drawLiability / totalLiability) * RISK_ADJUSTMENT_FACTOR;
     }
   }
 
-  // 3. Adjust odds based on AI analysis of recent news
+  // 3. Adjust odds based on AI analysis of recent news - unchanged
   const newsImpact = await analyzeNewsImpact(
     newsSummary,
     homeTeamName,
@@ -112,7 +115,7 @@ const generateOddsForGame = async (
   awayOdds *= newsImpact.away;
   drawOdds *= newsImpact.draw;
 
-  // 4. Final formatting and validation
+  // 4. Final formatting and validation - unchanged
   const finalOdds = {
     home: parseFloat(Math.max(1.01, homeOdds).toFixed(2)),
     away: parseFloat(Math.max(1.01, awayOdds).toFixed(2)),

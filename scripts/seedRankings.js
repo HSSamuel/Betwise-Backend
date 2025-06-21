@@ -1,11 +1,13 @@
+// In: Bet/Backend/scripts/seedRankings.js
+
 const mongoose = require("mongoose");
 const TeamRanking = require("../models/TeamRanking");
 const rankingsData = require("../services/team-rankings.json");
-const config = require("../config/env"); // <-- IMPORT the new config
+const config = require("../config/env");
 
 const seedRankings = async () => {
   console.log("🚀 Starting team rankings seeding script...");
-  const dbUri = config.MONGODB_URI; // <-- USE config
+  const dbUri = config.MONGODB_URI;
   if (!dbUri) {
     console.error("❌ Error: MONGODB_URI is not defined.");
     process.exit(1);

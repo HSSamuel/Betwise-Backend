@@ -13,13 +13,12 @@ require("./config/passport-setup");
 const cron = require("node-cron");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
-const { syncGames } = require("./services/sportsDataService");
+const { syncGames, syncLiveGames } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
 
 const app = express();
 const server = http.createServer(app);
 
-// --- FIX: A more robust and flexible CORS configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
@@ -36,7 +35,7 @@ const corsOptions = {
   },
   credentials: true,
 };
-// --- Apply CORS to both Express and Socket.IO ---
+
 app.use(cors(corsOptions));
 const io = new Server(server, {
   cors: corsOptions,
@@ -52,13 +51,6 @@ app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
-// --- Essential Middleware ---
-app.use(helmet());
-app.use(cors(corsOptions));
-app.use(express.json());
-app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
-
-// --- Rate Limiting Setup ---
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
@@ -77,7 +69,6 @@ const authLimiter = rateLimit({
 
 app.use("/api", generalApiLimiter);
 
-// --- Route Definitions (with API Versioning) ---
 const apiVersion = "/api/v1";
 
 app.use(`${apiVersion}/auth`, authLimiter, require("./routes/authRoutes"));
@@ -88,7 +79,6 @@ app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
 app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
 
-// --- Socket.IO Authentication Middleware ---
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -103,7 +93,6 @@ io.use((socket, next) => {
   });
 });
 
-// --- Centralized Socket.IO Connection Logic ---
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
   socket.on("joinUserRoom", (userId) => {
@@ -119,26 +108,34 @@ io.on("connection", (socket) => {
   });
 });
 
-// --- Server Startup ---
 const startServer = async () => {
   try {
     await connectDB();
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, "0.0.0.0", () => {
-      // Explicitly listen on 0.0.0.0 for Render
       console.log(
         `🚀 Server running on port ${PORT} in ${
           process.env.NODE_ENV || "development"
         } mode.`
       );
 
+      // Cron job for UPCOMING games
       cron.schedule("*/30 * * * *", () => {
         console.log("🕒 Cron: Fetching upcoming games from API-Football...");
         syncGames("apifootball");
       });
-      cron.schedule("0 */6 * * *", () => {
-        console.log("🕒 Cron: Fetching upcoming games from TheSportsDB...");
-        syncGames("thesportsdb");
+
+      // Interval for LIVE games
+      setInterval(() => {
+        console.log("🕒 Interval: Syncing live game data...");
+        syncLiveGames(io);
+      }, 60000);
+
+      // --- NEW: Cron job for Platform Risk Analysis ---
+      // This will run every 15 minutes to check for high-risk games.
+      cron.schedule("*/15 * * * *", () => {
+        console.log("🕒 Cron: Analyzing platform risk...");
+        analyzePlatformRisk();
       });
 
       console.log("✅ All background tasks have been scheduled.");

@@ -13,7 +13,7 @@ const teamRankingSchema = new mongoose.Schema({
     // For case-insensitive searching
     type: String,
     required: true,
-    unique: true,
+    unique: true, // This option implicitly creates the necessary index.
     lowercase: true,
   },
   ranking: {
@@ -22,8 +22,5 @@ const teamRankingSchema = new mongoose.Schema({
     default: 75,
   },
 });
-
-// Index for efficient searching
-teamRankingSchema.index({ teamName_lower: 1 });
 
 module.exports = mongoose.model("TeamRanking", teamRankingSchema);

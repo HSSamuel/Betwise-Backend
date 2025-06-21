@@ -102,33 +102,132 @@ exports.getRecommendedGames = async (req, res, next) => {
 
 exports.handleChat = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized.");
-    const { message } = req.body;
-    if (!message)
-      return res.status(400).json({ msg: 'A "message" is required.' });
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
 
+    let { message, history = [], context = null } = req.body;
+    context = context || {};
+    if (!message) {
+      return res.status(400).json({ msg: 'A "message" field is required.' });
+    }
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const prompt = `You are "BetWise AI", a helpful sports betting assistant. The user, ${
+    // State machine for handling multi-turn conversations
+    if (context.conversationState === "confirming_bet") {
+      if (
+        ["yes", "y", "correct", "ok", "yep"].includes(
+          message.toLowerCase().trim()
+        )
+      ) {
+        const betData = context.betSlip;
+        await bettingService.placeSingleBetTransaction(
+          user._id,
+          betData.gameId,
+          betData.outcome,
+          betData.stake
+        );
+        return res.json({
+          reply: "I've placed that bet for you! Good luck!",
+          context: {}, // Clear context after action
+        });
+      } else {
+        return res.json({
+          reply: "Okay, I've cancelled that bet. Anything else?",
+          context: {}, // Clear context
+        });
+      }
+    }
+
+    // Fetch fresh data from the database to give the AI full context
+    const recentBets = await Bet.find({ user: user._id })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .populate("selections.game", "homeTeam awayTeam")
+      .lean();
+    const recentTransactions = await Transaction.find({ user: user._id })
+      .sort({ createdAt: -1 })
+      .limit(3)
+      .lean();
+    const pendingWithdrawal = await Withdrawal.findOne({
+      user: user._id,
+      status: "pending",
+    }).lean();
+    const withdrawalStatus = pendingWithdrawal
+      ? `Yes, $${pendingWithdrawal.amount.toFixed(2)} is pending.`
+      : "No.";
+    const recentResults = await Game.find({ status: "finished" })
+      .sort({ matchDate: -1 })
+      .limit(10)
+      .lean();
+
+    // A more advanced prompt with clear instructions for the AI
+    const systemPrompt = `You are "BetWise AI", a helpful and witty sports betting assistant for the user "${
       user.username
-    }, said: "${message}". Their wallet balance is $${user.walletBalance.toFixed(
-      2
-    )}. Based on this, provide a short, helpful response.`;
+    }". Your goal is to be proactive and conversational.
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
+      CURRENT CONVERSATIONAL CONTEXT:
+      ${JSON.stringify(context, null, 2)}
 
-    res.json({
-      reply:
-        text || "I'm not sure how to respond to that. Can you try rephrasing?",
+      USER'S LIVE ACCOUNT DATA:
+      - Wallet Balance: $${user.walletBalance.toFixed(2)}
+      - Recent Bets: ${formatBetsForPrompt(recentBets)}
+      - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
+      - Pending Withdrawal: ${withdrawalStatus}
+
+      RECENT GAME RESULTS FROM DATABASE:
+      ${formatResultsForPrompt(recentResults)}
+
+      YOUR TASK:
+      1.  Analyze the user's message: "${message}".
+      2.  **Be proactive.** If the user asks about a team, immediately find their next match instead of asking more questions.
+      3.  Use the user's live data to answer questions about their account.
+      4.  If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If it's there, provide the score.
+      5.  If you identify a clear bet intent (e.g., "bet $10 on Man U"), ask for confirmation and return a JSON object with "newContext.conversationState": "confirming_bet" and a "betSlip".
+      6.  If the conversation is complete, return an empty "newContext" object.
+      7.  Return ONLY the JSON object with your text response in the "reply" key and any new context.`;
+
+    const result = await model.generateContent(systemPrompt);
+    const rawAiText = result.response.text();
+    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
+
+    if (!jsonMatch || !jsonMatch[0]) {
+      return res.json({
+        reply: "I'm not sure how to respond to that. Please try again.",
+        context,
+      });
+    }
+    const aiResponse = JSON.parse(jsonMatch[0]);
+
+    if (
+      aiResponse.newContext?.conversationState === "confirming_bet" &&
+      aiResponse.newContext.betSlip.teamToBetOn
+    ) {
+      const intent = aiResponse.newContext.betSlip;
+      const teamRegex = new RegExp(intent.teamToBetOn, "i");
+      const game = await Game.findOne({
+        status: "upcoming",
+        $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
+      });
+      if (game) {
+        aiResponse.newContext.betSlip = {
+          gameId: game._id,
+          stake: intent.stake,
+          outcome: game.homeTeam.match(teamRegex) ? "A" : "B",
+          oddsAtTimeOfBet: game.odds,
+        };
+      } else {
+        aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
+        aiResponse.newContext = {};
+      }
+    }
+
+    return res.json({
+      reply: aiResponse.reply,
+      context: aiResponse.newContext || {},
     });
   } catch (error) {
     console.error("AI chat handler error:", error);
-    res
-      .status(500)
-      .json({ reply: "Sorry, the AI service is currently unavailable." });
+    next(error);
   }
 };
 

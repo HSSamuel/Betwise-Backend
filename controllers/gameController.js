@@ -1,3 +1,5 @@
+// In: Bet/Backend/controllers/gameController.js
+
 const { body, query, param, validationResult } = require("express-validator");
 const mongoose = require("mongoose");
 const Game = require("../models/Game");
@@ -6,11 +8,22 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const { generateGameSummary } = require("./aiController");
 const { generateOddsForGame } = require("../services/oddsService");
-const { resolveBetsForGame } = require("../services/betResolutionService"); // UPDATED IMPORT
+const { resolveBetsForGame } = require("../services/betResolutionService");
 
-// --- Validation Rules --- (No changes to validation rules)
-// Made odds validation optional for single game creation
-exports.validateCreateGame = [
+// --- Define all functions and validation rules as local constants ---
+
+const validateGetGames = [
+  query("league").optional().isString().trim().escape(),
+  query("status")
+    .optional()
+    .isIn(["upcoming", "live", "finished", "cancelled"])
+    .escape(),
+  query("date").optional().isISO8601().toDate(),
+  query("page").optional().isInt({ min: 1 }).toInt(),
+  query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
+];
+
+const validateCreateGame = [
   body("homeTeam")
     .trim()
     .notEmpty()
@@ -64,29 +77,18 @@ exports.validateCreateGame = [
   body("status").optional().isIn(["upcoming", "live", "finished", "cancelled"]),
 ];
 
-exports.validateGetGames = [
-  query("league").optional().isString().trim().escape(),
-  query("status")
-    .optional()
-    .isIn(["upcoming", "live", "finished", "cancelled"])
-    .escape(),
-  query("date").optional().isISO8601().toDate(),
-  query("page").optional().isInt({ min: 1 }).toInt(),
-  query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
-];
-
-exports.validateGameId = [
+const validateGameId = [
   param("id").isMongoId().withMessage("Invalid game ID format."),
 ];
 
-exports.validateSetResult = [
+const validateSetResult = [
   param("id").isMongoId().withMessage("Invalid game ID format."),
   body("result")
     .isIn(["A", "B", "Draw"])
     .withMessage("Result must be 'A', 'B', or 'Draw'."),
 ];
 
-exports.validateUpdateGame = [
+const validateUpdateGame = [
   param("id").isMongoId().withMessage("Invalid game ID format."),
   body("homeTeam").optional().trim().isLength({ min: 2, max: 100 }).escape(),
   body("awayTeam").optional().trim().isLength({ min: 2, max: 100 }).escape(),
@@ -99,7 +101,7 @@ exports.validateUpdateGame = [
   body("status").optional().isIn(["upcoming", "live", "finished", "cancelled"]),
 ];
 
-exports.validateCreateMultipleGames = [
+const validateCreateMultipleGames = [
   body()
     .isArray({ min: 1 })
     .withMessage("Request body must be an array of games."),
@@ -133,57 +135,51 @@ exports.validateCreateMultipleGames = [
   }),
 ];
 
-// --- Controller Functions --- (No changes to other functions)
+const validateAdjustOdds = [
+  param("id").isMongoId().withMessage("A valid game ID is required."),
+  body("home")
+    .isFloat({ min: 1.01 })
+    .withMessage("Home odds must be at least 1.01."),
+  body("away")
+    .isFloat({ min: 1.01 })
+    .withMessage("Away odds must be at least 1.01."),
+  body("draw")
+    .isFloat({ min: 1.01 })
+    .withMessage("Draw odds must be at least 1.01."),
+];
 
-exports.createMultipleGames = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+const getGames = async (req, res, next) => {
+  const { league, status, date, page = 1, limit = 10 } = req.query;
+  const filter = {};
+  if (league) filter.league = { $regex: new RegExp(league, "i") };
+  if (status) filter.status = status;
+  if (date) {
+    const startDate = new Date(new Date(date).setHours(0, 0, 0, 0));
+    const endDate = new Date(new Date(date).setHours(23, 59, 59, 999));
+    filter.matchDate = { $gte: startDate, $lte: endDate };
   }
-  try {
-    const createdGames = await Game.insertMany(req.body, { ordered: false });
-    res.status(201).json({
-      msg: `Successfully created ${createdGames.length} new games.`,
-      createdGames,
-    });
-  } catch (error) {
-    next(error);
-  }
+  const skip = (page - 1) * limit;
+  const games = await Game.find(filter)
+    .sort({ matchDate: 1 })
+    .limit(limit)
+    .skip(skip)
+    .lean();
+  const totalGames = await Game.countDocuments(filter);
+  res.json({
+    games,
+    currentPage: page,
+    totalPages: Math.ceil(totalGames / limit),
+    totalCount: totalGames,
+  });
 };
 
-exports.createGame = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
+const createGame = async (req, res, next) => {
   let { homeTeam, awayTeam, odds, league, matchDate, status } = req.body;
-
   try {
     if (!odds) {
-      console.log("ℹ️ Odds not provided. Calling odds generation service...");
-      odds = generateOddsForGame(homeTeam, awayTeam);
+      odds = await generateOddsForGame(homeTeam, awayTeam);
     }
-
-    const startOfDay = new Date(new Date(matchDate).setHours(0, 0, 0, 0));
-    const endOfDay = new Date(new Date(matchDate).setHours(23, 59, 59, 999));
-
-    const existingGame = await Game.findOne({
-      homeTeam: { $regex: new RegExp(`^${homeTeam}$`, "i") },
-      awayTeam: { $regex: new RegExp(`^${awayTeam}$`, "i") },
-      matchDate: { $gte: startOfDay, $lt: endOfDay },
-    });
-
-    if (existingGame) {
-      const err = new Error(
-        "A game with these teams on this date already exists."
-      );
-      err.statusCode = 400;
-      return next(err);
-    }
-
     const gameSummary = await generateGameSummary(homeTeam, awayTeam, league);
-
     const game = new Game({
       homeTeam,
       awayTeam,
@@ -194,73 +190,28 @@ exports.createGame = async (req, res, next) => {
       summary: gameSummary,
     });
     await game.save();
-
-    res.status(201).json({
-      message: `Match added: ${game.homeTeam} vs ${game.awayTeam}.`,
-      game,
-    });
+    res
+      .status(201)
+      .json({
+        message: `Match added: ${game.homeTeam} vs ${game.awayTeam}.`,
+        game,
+      });
   } catch (error) {
     next(error);
   }
 };
 
-exports.getGames = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+const getGameById = async (req, res, next) => {
+  const game = await Game.findById(req.params.id).lean();
+  if (!game) {
+    const err = new Error("Game not found.");
+    err.statusCode = 404;
+    return next(err);
   }
-  try {
-    const { league, status, date, page = 1, limit = 10 } = req.query;
-    const filter = {};
-    if (league) filter.league = { $regex: new RegExp(league, "i") };
-    if (status) filter.status = status;
-    if (date) {
-      const startDate = new Date(new Date(date).setHours(0, 0, 0, 0));
-      const endDate = new Date(new Date(date).setHours(23, 59, 59, 999));
-      filter.matchDate = { $gte: startDate, $lte: endDate };
-    }
-    const skip = (page - 1) * limit;
-    const games = await Game.find(filter)
-      .sort({ matchDate: 1 })
-      .limit(limit)
-      .skip(skip)
-      .lean();
-    const totalGames = await Game.countDocuments(filter);
-    res.json({
-      games,
-      currentPage: page,
-      totalPages: Math.ceil(totalGames / limit),
-      totalCount: totalGames,
-    });
-  } catch (error) {
-    next(error);
-  }
+  res.json(game);
 };
 
-exports.getGameById = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-  try {
-    const game = await Game.findById(req.params.id).lean();
-    if (!game) {
-      const err = new Error("Game not found.");
-      err.statusCode = 404;
-      return next(err);
-    }
-    res.json(game);
-  } catch (error) {
-    next(error);
-  }
-};
-
-// --- REFACTORED setResult FUNCTION ---
-exports.setResult = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
+const setResult = async (req, res, next) => {
   const { id } = req.params;
   const { result } = req.body;
   const session = await mongoose.startSession();
@@ -268,22 +219,11 @@ exports.setResult = async (req, res, next) => {
   try {
     const game = await Game.findById(id).session(session);
     if (!game) throw new Error("Game not found.");
-    if (game.status === "cancelled")
-      throw new Error("Cannot set result for a cancelled game.");
-    if (game.result)
-      throw new Error(
-        `Game result already set to ${game.result}. Cannot change.`
-      );
-
     game.result = result;
     game.status = "finished";
     await game.save({ session });
-
-    // Call the single, consolidated service to resolve all bets for this game
     await resolveBetsForGame(game, session);
-
     await session.commitTransaction();
-
     req.io.emit("gameResultUpdated", {
       gameId: game._id,
       result: game.result,
@@ -301,62 +241,40 @@ exports.setResult = async (req, res, next) => {
   }
 };
 
-exports.updateGame = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
+const updateGame = async (req, res, next) => {
   const { id } = req.params;
   const updates = req.body;
-  try {
-    const game = await Game.findById(id);
-    if (!game) {
-      const err = new Error("Game not found.");
-      err.statusCode = 404;
-      return next(err);
-    }
-    if (game.status === "finished" || game.status === "cancelled") {
-      const err = new Error(
-        `Cannot update game details because its status is '${game.status}'.`
-      );
-      err.statusCode = 400;
-      return next(err);
-    }
-    Object.keys(updates).forEach((key) => {
-      if (key === "odds" && typeof updates.odds === "object" && game.odds) {
-        game.odds = { ...game.odds, ...updates.odds };
-      } else if (key !== "_id" && updates[key] !== undefined) {
-        game[key] = updates[key];
-      }
-    });
-    await game.save();
-    res.json({ msg: "Game updated successfully.", game });
-  } catch (error) {
-    next(error);
+  const game = await Game.findById(id);
+  if (!game) {
+    const err = new Error("Game not found.");
+    err.statusCode = 404;
+    return next(err);
   }
+  Object.keys(updates).forEach((key) => {
+    if (key === "odds" && typeof updates.odds === "object" && game.odds) {
+      game.odds = { ...game.odds, ...updates.odds };
+    } else if (key !== "_id" && updates[key] !== undefined) {
+      game[key] = updates[key];
+    }
+  });
+  await game.save();
+  res.json({ msg: "Game updated successfully.", game });
 };
 
-exports.cancelGame = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
+const cancelGame = async (req, res, next) => {
   const { id } = req.params;
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
     const game = await Game.findById(id).session(session);
     if (!game) throw new Error("Game not found.");
-    if (game.status === "finished" && game.result)
-      throw new Error(
-        "Cannot cancel a game that has already finished and has a result."
-      );
-    if (game.status === "cancelled")
-      throw new Error("Game is already cancelled.");
     game.status = "cancelled";
     game.result = null;
     await game.save({ session });
-    const betsToRefund = await Bet.find({ game: game._id, status: "pending" })
+    const betsToRefund = await Bet.find({
+      "selections.game": game._id,
+      status: "pending",
+    })
       .populate("user")
       .session(session);
     for (const bet of betsToRefund) {
@@ -389,68 +307,110 @@ exports.cancelGame = async (req, res, next) => {
   }
 };
 
-exports.getPersonalizedGames = async (req, res, next) => {
-  try {
-    const user = await User.findById(req.user._id).lean();
-    let filter = { status: "upcoming" };
-    if (user.favoriteLeagues && user.favoriteLeagues.length > 0) {
-      filter.league = { $in: user.favoriteLeagues };
-    } else {
-      filter.league = "English Premier League";
-    }
-    const games = await Game.find(filter).sort({ matchDate: 1 }).limit(20);
-    res.json({ message: "Your personalized game feed.", games });
-  } catch (error) {
-    next(error);
-  }
-};
-
-exports.getGameSuggestions = async (req, res, next) => {
-  try {
-    const user = await User.findById(req.user._id).lean();
-    const userBets = await Bet.find({ user: req.user._id })
-      .select("game")
-      .lean();
-
-    const betOnGameIds = userBets
-      .filter((bet) => bet.game)
-      .map((bet) => bet.game.toString());
-
-    let suggestedGames = [];
-    const filter = { status: "upcoming", _id: { $nin: betOnGameIds } };
-    if (user.favoriteLeagues && user.favoriteLeagues.length > 0) {
-      filter.league = { $in: user.favoriteLeagues };
-      suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(5);
-    }
-    if (suggestedGames.length === 0) {
-      delete filter.league;
-      suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(5);
-    }
-    res.json({
-      message: "Here are some game suggestions for you.",
-      suggestions: suggestedGames,
+const createMultipleGames = async (req, res, next) => {
+  const createdGames = await Game.insertMany(req.body, { ordered: false });
+  res
+    .status(201)
+    .json({
+      msg: `Successfully created ${createdGames.length} new games.`,
+      createdGames,
     });
-  } catch (error) {
-    next(error);
-  }
 };
 
-exports.getGameOddsHistory = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
+const getPersonalizedGames = async (req, res, next) => {
+  const user = await User.findById(req.user._id).lean();
+  let filter = { status: "upcoming" };
+  if (user.favoriteLeagues && user.favoriteLeagues.length > 0) {
+    filter.league = { $in: user.favoriteLeagues };
+  } else {
+    filter.league = "English Premier League";
   }
+  const games = await Game.find(filter).sort({ matchDate: 1 }).limit(20);
+  res.json({ message: "Your personalized game feed.", games });
+};
+
+const getGameSuggestions = async (req, res, next) => {
+  const user = await User.findById(req.user._id).lean();
+  const userBets = await Bet.find({ user: req.user._id })
+    .select("selections.game")
+    .lean();
+  const betOnGameIds = userBets
+    .flatMap((bet) => bet.selections)
+    .filter((selection) => selection.game)
+    .map((selection) => selection.game.toString());
+  let suggestedGames = [];
+  const filter = { status: "upcoming", _id: { $nin: betOnGameIds } };
+  if (user.favoriteLeagues && user.favoriteLeagues.length > 0) {
+    filter.league = { $in: user.favoriteLeagues };
+    suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(5);
+  }
+  if (suggestedGames.length === 0) {
+    delete filter.league;
+    suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(5);
+  }
+  res.json({
+    message: "Here are some game suggestions for you.",
+    suggestions: suggestedGames,
+  });
+};
+
+const getGameOddsHistory = async (req, res, next) => {
+  const game = await Game.findById(req.params.id)
+    .select("homeTeam awayTeam odds oddsHistory")
+    .lean();
+  if (!game) {
+    const err = new Error("Game not found.");
+    err.statusCode = 404;
+    return next(err);
+  }
+  res.json({ message: "Successfully fetched odds history.", game });
+};
+
+const adjustOdds = async (req, res, next) => {
+  const { id } = req.params;
+  const { home, away, draw } = req.body;
   try {
-    const game = await Game.findById(req.params.id)
-      .select("homeTeam awayTeam odds oddsHistory")
-      .lean();
+    const game = await Game.findById(id);
     if (!game) {
       const err = new Error("Game not found.");
       err.statusCode = 404;
       return next(err);
     }
-    res.json({ message: "Successfully fetched odds history.", game });
+    if (game.status !== "upcoming") {
+      const err = new Error(
+        `Cannot adjust odds for a game that is already '${game.status}'.`
+      );
+      err.statusCode = 400;
+      return next(err);
+    }
+    game.oddsHistory.push({ odds: game.odds, timestamp: new Date() });
+    game.odds = { home, away, draw };
+    await game.save();
+    req.io.emit("oddsUpdate", { gameId: game._id, odds: game.odds });
+    res.status(200).json({ msg: "Odds have been successfully updated.", game });
   } catch (error) {
     next(error);
   }
 };
+
+module.exports = {
+  validateGetGames,
+  validateCreateGame,
+  validateGameId,
+  validateSetResult,
+  validateUpdateGame,
+  validateCreateMultipleGames,
+  validateAdjustOdds,
+  getGames,
+  createGame,
+  getGameById,
+  setResult,
+  updateGame,
+  cancelGame,
+  getPersonalizedGames,
+  getGameSuggestions,
+  getGameOddsHistory,
+  createMultipleGames,
+  adjustOdds,
+};
+//   `Socket ${socket.id} joined user room: ${userId}`

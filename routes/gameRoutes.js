@@ -1,90 +1,94 @@
+// In: Bet/Backend/routes/gameRoutes.js
+
 const express = require("express");
 const router = express.Router();
 const { auth, isAdmin } = require("../middleware/authMiddleware");
 const {
   handleValidationErrors,
-} = require("../middleware/validationMiddleware"); // <-- IMPORT
-const gameController = require("../controllers/gameController");
+} = require("../middleware/validationMiddleware");
+const {
+  validateGetGames,
+  getGames,
+  getPersonalizedGames,
+  getGameSuggestions,
+  validateCreateGame,
+  createGame,
+  validateCreateMultipleGames,
+  createMultipleGames,
+  validateGameId,
+  getGameOddsHistory,
+  getGameById,
+  validateSetResult,
+  setResult,
+  validateUpdateGame,
+  updateGame,
+  cancelGame,
+  validateAdjustOdds, // New Import
+  adjustOdds, // New Import
+} = require("../controllers/gameController");
 
-// GET all games (public)
+// --- Public Routes ---
+router.get("/", validateGetGames, handleValidationErrors, getGames);
+router.get("/feed", auth, getPersonalizedGames);
+router.get("/suggestions", auth, getGameSuggestions);
 router.get(
-  "/",
-  gameController.validateGetGames,
+  "/:id/odds-history",
+  validateGameId,
   handleValidationErrors,
-  gameController.getGames
+  getGameOddsHistory
 );
+router.get("/:id", validateGameId, handleValidationErrors, getGameById);
 
-// GET personalized feed for a logged-in user
-router.get("/feed", auth, gameController.getPersonalizedGames); // No validation here
-
-// GET game suggestions for a logged-in user
-router.get("/suggestions", auth, gameController.getGameSuggestions); // No validation here
-
-// POST to create a single game (admin only)
+// --- Admin-Only Routes ---
 router.post(
   "/",
   auth,
   isAdmin,
-  gameController.validateCreateGame,
+  validateCreateGame,
   handleValidationErrors,
-  gameController.createGame
+  createGame
 );
-
-// POST to create multiple games at once (admin only)
 router.post(
   "/bulk",
   auth,
   isAdmin,
-  gameController.validateCreateMultipleGames,
+  validateCreateMultipleGames,
   handleValidationErrors,
-  gameController.createMultipleGames
+  createMultipleGames
 );
-
-// GET odds history for a specific game (public)
-router.get(
-  "/:id/odds-history",
-  gameController.validateGameId,
-  handleValidationErrors,
-  gameController.getGameOddsHistory
-);
-
-// GET a single game by its ID (public)
-router.get(
-  "/:id",
-  gameController.validateGameId,
-  handleValidationErrors,
-  gameController.getGameById
-);
-
-// PATCH to set a game's result (admin only)
 router.patch(
   "/:id/result",
   auth,
   isAdmin,
-  gameController.validateSetResult,
+  validateSetResult,
   handleValidationErrors,
-  gameController.setResult
+  setResult
 );
-
-// PUT to update a game's details (admin only)
 router.put(
   "/:id",
   auth,
   isAdmin,
-  gameController.validateUpdateGame,
+  validateUpdateGame,
   handleValidationErrors,
-  gameController.updateGame
+  updateGame
 );
-
-// PATCH to cancel a game (admin only)
 router.patch(
   "/:id/cancel",
   auth,
   isAdmin,
-  gameController.validateGameId,
+  validateGameId,
   handleValidationErrors,
-  gameController.cancelGame
+  cancelGame
+);
+
+// NEW: Route for manually adjusting odds
+router.patch(
+  "/:id/adjust-odds",
+  auth,
+  isAdmin,
+  validateAdjustOdds,
+  handleValidationErrors,
+  adjustOdds
 );
 
 module.exports = router;
-// This code defines the routes for managing games in a betting application, including public access to game listings and personalized feeds for logged-in users, as well as administrative functions for creating, updating, and managing game results. It uses middleware for authentication and validation of requests.
