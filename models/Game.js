@@ -91,9 +91,15 @@ const gameSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: {
-        values: ["upcoming", "live", "finished", "cancelled"],
-        message:
-          'Game status "{VALUE}" is not supported. Must be upcoming, live, finished, or cancelled.',
+        values: [
+          "upcoming",
+          "live",
+          "finished",
+          "cancelled",
+          "postponed",
+          "interrupted",
+        ],
+        message: 'Game status "{VALUE}" is not supported.',
       },
       default: "upcoming",
     },
@@ -102,11 +108,8 @@ const gameSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
-    externalApiId: {
-      type: String,
-      unique: true, // This automatically creates the index we need
-      sparse: true,
-    },
+    summary: { type: String, trim: true, default: "" },
+    externalApiId: { type: String, unique: true, sparse: true },
   },
   { timestamps: true }
 );

@@ -10,18 +10,16 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const connectDB = require("./config/db");
 require("./config/passport-setup");
-const Game = require("./models/Game");
 const cron = require("node-cron");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
-const { syncGames, syncLiveGames } = require("./services/sportsDataService");
+const { fetchAndSyncGames } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
 const AviatorService = require("./services/aviatorService");
 
 const app = express();
 const server = http.createServer(app);
 
-// --- START: Definitive CORS and Server Configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
@@ -37,10 +35,29 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 const io = new Server(server, {
-  cors: corsOptions,
-  path: "/betwise-socket/", // Use the custom path for Socket.IO
+  cors: {
+    origin:
+      process.env.FRONTEND_URL || "https://betwise-frontend-5uqq.vercel.app",
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Authorization", "Content-Type"],
+    credentials: true,
+  },
 });
-// --- END: Definitive CORS and Server Configuration ---
+
+app.set("json spaces", 2);
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
+
+// --- Essential Middleware ---
+app.use(helmet());
+app.use(
+  cors({
+    origin:
+      process.env.FRONTEND_URL || "https://betwise-frontend-5uqq.vercel.app",
+  })
+);
 
 const aviatorService = new AviatorService(io);
 if (process.env.NODE_ENV !== "test") {
@@ -57,16 +74,13 @@ app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
-// Create a dedicated router for all versioned API endpoints
-const apiRouter = express.Router();
-
+// --- Rate Limiting Setup ---
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
 });
-
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: parseInt(process.env.API_RATE_LIMIT_MAX) || 100,
@@ -77,56 +91,38 @@ const authLimiter = rateLimit({
   },
 });
 
-// Apply middleware and routes to the dedicated API router
-apiRouter.use("/auth", authLimiter, require("./routes/authRoutes"));
-apiRouter.use("/games", generalApiLimiter, require("./routes/gameRoutes"));
-apiRouter.use("/bets", generalApiLimiter, require("./routes/betRoutes"));
-apiRouter.use("/wallet", generalApiLimiter, require("./routes/walletRoutes"));
-apiRouter.use("/admin", generalApiLimiter, require("./routes/adminRoutes"));
-apiRouter.use("/users", generalApiLimiter, require("./routes/userRoutes"));
-apiRouter.use("/ai", generalApiLimiter, require("./routes/aiRoutes"));
-apiRouter.use("/aviator", generalApiLimiter, require("./routes/aviatorRoutes"));
+app.use("/api", generalApiLimiter);
 
-// Mount the entire API router under a single '/api/v1' prefix
-app.use("/api/v1", apiRouter);
+// --- Route Definitions (with API Versioning) ---
+const apiVersion = "/api/v1";
 
-// --- Socket.IO Middleware and Connection Handling ---
+app.use(`${apiVersion}/auth`, authLimiter, require("./routes/authRoutes"));
+app.use(`${apiVersion}/games`, require("./routes/gameRoutes"));
+app.use(`${apiVersion}/bets`, require("./routes/betRoutes"));
+app.use(`${apiVersion}/wallet`, require("./routes/walletRoutes"));
+app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
+app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
+app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
+app.use(`${apiVersion}/aviator`, require("./routes/aviatorRoutes"));
+
+// --- Socket.IO Authentication Middleware ---
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
-    const err = new Error("Authentication error: Token not provided.");
-    err.data = { code: "NO_TOKEN" };
-    return next(err);
+    return next(new Error("Authentication error: Token not provided."));
   }
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
-      const newErr = new Error("Authentication error: Invalid token.");
-      newErr.data = { code: "INVALID_TOKEN", reason: err.message };
-      return next(newErr);
+      return next(new Error("Authentication error: Invalid token."));
     }
     socket.user = decoded;
     next();
   });
 });
 
+// --- Centralized Socket.IO Connection Logic ---
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
-  
-  const sendCurrentLiveGames = async () => {
-    try {
-      const liveGames = await Game.find({
-        $or: [
-          { status: "live" },
-          { status: "upcoming", matchDate: { $lte: new Date() } },
-        ],
-      });
-      socket.emit("allLiveGames", liveGames);
-    } catch (error) {
-      console.error("Error fetching initial live games for socket:", error);
-    }
-  };
-  sendCurrentLiveGames();
-
   socket.on("joinUserRoom", (userId) => {
     if (socket.user.id === userId) {
       socket.join(userId);
@@ -135,13 +131,12 @@ io.on("connection", (socket) => {
       );
     }
   });
-
   socket.on("disconnect", () => {
     console.log(`❌ Socket disconnected: ${socket.id}`);
   });
 });
 
-// --- Server Startup Logic ---
+// --- Server Startup ---
 const startServer = async () => {
   try {
     await connectDB();
@@ -153,19 +148,35 @@ const startServer = async () => {
         } mode.`
       );
 
+      // Cron job for fetching UPCOMING games (every 30 mins)
       cron.schedule("*/30 * * * *", () => {
-        console.log("🕒 Cron: Fetching upcoming games from API-Football...");
-        syncGames("apifootball");
+        console.log("🕒 Cron: Fetching upcoming games...");
+        // Pass 'io' so the service can emit events if needed in the future
+        fetchAndSyncGames(io, { status: "NS" });
       });
 
-      setInterval(() => {
-        console.log("🕒 Interval: Syncing live game data...");
-        syncLiveGames(io);
-      }, 60000);
+      cron.schedule("*/30 * * * *", () => {
+        console.log("🕒 Cron: Fetching upcoming games from API-Football...");
+        fetchAndSyncGames("apifootball");
+      });
 
-      cron.schedule("*/15 * * * *", () => {
-        console.log("🕒 Cron: Analyzing platform risk...");
-        analyzePlatformRisk();
+      // Cron job for fetching LIVE games (every 1 minute)
+      cron.schedule("* * * * *", () => {
+        console.log("🕒 Cron: Fetching live game data...");
+        fetchAndSyncGames(io, { live: "all" });
+      });
+
+      // Cron job for Risk Monitoring (every 5 mins)
+      cron.schedule("*/5 * * * *", async () => {
+        console.log("🤖 Cron: Monitoring platform risk...");
+        try {
+          await analyzePlatformRisk();
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled risk analysis:",
+            error.message
+          );
+        }
       });
 
       console.log("✅ All background tasks have been scheduled.");
