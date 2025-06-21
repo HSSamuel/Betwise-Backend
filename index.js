@@ -122,6 +122,7 @@ io.on("connection", (socket) => {
           { status: "upcoming", matchDate: { $lte: new Date() } },
         ],
       });
+      // Emit an event with the full list of live games only to the user who just connected.
       socket.emit("allLiveGames", liveGames);
     } catch (error) {
       console.error("Error fetching initial live games for socket:", error);
