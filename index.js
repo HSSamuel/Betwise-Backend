@@ -21,33 +21,19 @@ const AviatorService = require("./services/aviatorService");
 const app = express();
 const server = http.createServer(app);
 
-// --- START OF FIX: CORS CONFIGURATION ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
 ];
 
 const corsOptions = {
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg =
-        "The CORS policy for this site does not allow access from the specified Origin.";
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
-  credentials: true,
+  origin: allowedOrigins,
   methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
-  preflightContinue: true, // Pass the preflight request to the next handler
+  credentials: true,
 };
 
-// ** CRITICAL **: Use CORS as one of the first pieces of middleware.
-// This handles the preflight 'OPTIONS' request.
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // Enable pre-flight for all routes
-// --- END OF FIX ---
+app.options("*", cors(corsOptions));
 
 const io = new Server(server, {
   cors: corsOptions,
@@ -86,26 +72,51 @@ const authLimiter = rateLimit({
   },
 });
 
-app.use("/api", generalApiLimiter);
 const apiVersion = "/api/v1";
 
+// --- START OF FIX: Apply limiters to each route individually ---
 app.use(`${apiVersion}/auth`, authLimiter, require("./routes/authRoutes"));
-app.use(`${apiVersion}/games`, require("./routes/gameRoutes"));
-app.use(`${apiVersion}/bets`, require("./routes/betRoutes"));
-app.use(`${apiVersion}/wallet`, require("./routes/walletRoutes"));
-app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
-app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
-app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
-app.use(`${apiVersion}/aviator`, require("./routes/aviatorRoutes"));
+app.use(
+  `${apiVersion}/games`,
+  generalApiLimiter,
+  require("./routes/gameRoutes")
+);
+app.use(`${apiVersion}/bets`, generalApiLimiter, require("./routes/betRoutes"));
+app.use(
+  `${apiVersion}/wallet`,
+  generalApiLimiter,
+  require("./routes/walletRoutes")
+);
+app.use(
+  `${apiVersion}/admin`,
+  generalApiLimiter,
+  require("./routes/adminRoutes")
+);
+app.use(
+  `${apiVersion}/users`,
+  generalApiLimiter,
+  require("./routes/userRoutes")
+);
+app.use(`${apiVersion}/ai`, generalApiLimiter, require("./routes/aiRoutes"));
+app.use(
+  `${apiVersion}/aviator`,
+  generalApiLimiter,
+  require("./routes/aviatorRoutes")
+);
+// --- END OF FIX ---
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
-    return next(new Error("Authentication error: Token not provided."));
+    const err = new Error("Authentication error: Token not provided.");
+    err.data = { code: "NO_TOKEN" };
+    return next(err);
   }
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) {
-      return next(new Error("Authentication error: Invalid token."));
+      const newErr = new Error("Authentication error: Invalid token.");
+      newErr.data = { code: "INVALID_TOKEN", reason: err.message };
+      return next(newErr);
     }
     socket.user = decoded;
     next();
