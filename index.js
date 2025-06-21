@@ -21,7 +21,7 @@ const AviatorService = require("./services/aviatorService");
 const app = express();
 const server = http.createServer(app);
 
-// --- START: CORS and Server Configuration ---
+// --- START: Definitive CORS and Server Configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
@@ -33,14 +33,15 @@ const corsOptions = {
   credentials: true,
 };
 
-// Apply CORS to all incoming requests from the allowed origins
+// ** CRITICAL FIX **: Apply CORS middleware at the very beginning.
+// This ensures that the preflight OPTIONS request is handled before any other middleware or routing.
 app.use(cors(corsOptions));
 
 const io = new Server(server, {
   cors: corsOptions,
-  path: "/betwise-socket/", // Use the custom path for Socket.IO
+  path: "/betwise-socket/",
 });
-// --- END: CORS and Server Configuration ---
+// --- END: Definitive CORS and Server Configuration ---
 
 const aviatorService = new AviatorService(io);
 if (process.env.NODE_ENV !== "test") {
@@ -56,9 +57,6 @@ app.use((req, res, next) => {
 app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
-
-// --- START OF FINAL FIX: Dedicated API Router ---
-const apiRouter = express.Router();
 
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -77,7 +75,9 @@ const authLimiter = rateLimit({
   },
 });
 
-// Apply middleware and routes to the dedicated API router
+// Use a dedicated router for all API endpoints to ensure clean separation
+const apiRouter = express.Router();
+
 apiRouter.use("/auth", authLimiter, require("./routes/authRoutes"));
 apiRouter.use("/games", generalApiLimiter, require("./routes/gameRoutes"));
 apiRouter.use("/bets", generalApiLimiter, require("./routes/betRoutes"));
@@ -87,10 +87,10 @@ apiRouter.use("/users", generalApiLimiter, require("./routes/userRoutes"));
 apiRouter.use("/ai", generalApiLimiter, require("./routes/aiRoutes"));
 apiRouter.use("/aviator", generalApiLimiter, require("./routes/aviatorRoutes"));
 
-// Mount the entire API router under a single '/api/v1' prefix
+// Mount the entire API under the /api/v1 prefix
 app.use("/api/v1", apiRouter);
-// --- END OF FINAL FIX ---
 
+// --- Socket.IO Middleware and Connection Handling ---
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -141,6 +141,7 @@ io.on("connection", (socket) => {
   });
 });
 
+// --- Server Startup Logic ---
 const startServer = async () => {
   try {
     await connectDB();
