@@ -3,14 +3,35 @@ const mongoose = require("mongoose");
 const Game = require("../models/Game");
 const { generateOddsForGame } = require("./oddsService");
 const { resolveBetsForGame } = require("./betResolutionService");
-const config = require("../config/env"); // <-- IMPORT the new config
+const config = require("../config/env");
 
-// Helper function to add a delay between API calls
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// --- TheSportsDB Logic ---
+const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await axios(config);
+    } catch (error) {
+      // Check if the error is a network error that's worth retrying
+      if (error.code === "ECONNRESET" || error.code === "ETIMEDOUT") {
+        console.warn(
+          `⚠️ Network error (${
+            error.code
+          }) detected. Retrying in ${delay}ms... (Attempt ${i + 1}/${retries})`
+        );
+        await sleep(delay);
+      } else {
+        // For other errors (like 4xx or 5xx responses), throw immediately
+        throw error;
+      }
+    }
+  }
+  // If all retries fail, throw the last error
+  throw new Error(`Failed to fetch data after ${retries} attempts.`);
+};
+
 const fetchFromTheSportsDB = async () => {
-  const apiKey = config.X_RAPIDAPI_KEY; // <-- USE config
+  const apiKey = config.X_RAPIDAPI_KEY;
   if (!apiKey) {
     console.error("❌ X_RAPIDAPI_KEY (for TheSportsDB) is not defined.");
     return;
@@ -32,7 +53,8 @@ const fetchFromTheSportsDB = async () => {
         },
       };
 
-      const response = await axios.request(options);
+      const response = await axiosWithRetry(options);
+
       const events = response.data.events;
       if (!events) continue;
 
@@ -75,9 +97,8 @@ const fetchFromTheSportsDB = async () => {
   );
 };
 
-// --- API-Football Logic ---
 const fetchFromApiFootball = async () => {
-  const apiKey = config.APIFOOTBALL_KEY; // <-- USE config
+  const apiKey = config.APIFOOTBALL_KEY;
   if (!apiKey) {
     console.error("❌ APIFOOTBALL_KEY is not defined.");
     return;
@@ -108,7 +129,8 @@ const fetchFromApiFootball = async () => {
         headers: { "x-apisports-key": apiKey },
       };
 
-      const response = await axios(config);
+      const response = await axiosWithRetry(apiConfig);
+
       const fixtures = response.data.response;
       if (!fixtures || fixtures.length === 0) continue;
 
@@ -149,7 +171,6 @@ const fetchFromApiFootball = async () => {
   );
 };
 
-// --- Main Exported Function for Upcoming Games ---
 const syncGames = async (source = "apifootball") => {
   if (source === "thesportsdb") {
     await fetchFromTheSportsDB();
@@ -158,7 +179,6 @@ const syncGames = async (source = "apifootball") => {
   }
 };
 
-// Helper function to map API status to our internal status
 const mapApiStatus = (apiStatus) => {
   const finished_statuses = ["FT", "AET", "PEN"];
   if (finished_statuses.includes(apiStatus)) return "finished";
@@ -168,27 +188,35 @@ const mapApiStatus = (apiStatus) => {
   return "upcoming";
 };
 
-// Helper function to determine winner from score
 const getResultFromScore = (homeScore, awayScore) => {
   if (homeScore > awayScore) return "A";
   if (awayScore > homeScore) return "B";
   return "Draw";
 };
 
-// --- NEW FUNCTION to Sync Live Game Data ---
 const syncLiveGames = async (io) => {
-  const apiKey = config.APIFOOTBALL_KEY; // <-- USE config
+  const apiKey = config.APIFOOTBALL_KEY;
   if (!apiKey) {
     console.error("❌ APIFOOTBALL_KEY is not defined. Cannot sync live games.");
     return;
   }
 
-  const gamesInProgress = await Game.find({ status: "live" });
-  if (gamesInProgress.length === 0) {
+  // --- THIS IS THE FIX ---
+  // The query now looks for games that are either already live OR are upcoming
+  // but their match date has passed, meaning they should be live.
+  const gamesToUpdate = await Game.find({
+    $or: [
+      { status: "live" },
+      { status: "upcoming", matchDate: { $lte: new Date() } },
+    ],
+  });
+  // --- END OF FIX ---
+
+  if (gamesToUpdate.length === 0) {
     return;
   }
 
-  const gameIds = gamesInProgress
+  const gameIds = gamesToUpdate
     .map((game) => game.externalApiId.split("_")[1])
     .join("-");
 
@@ -199,11 +227,12 @@ const syncLiveGames = async (io) => {
       headers: { "x-apisports-key": apiKey },
     };
 
-    const response = await axios(config);
+    const response = await axiosWithRetry(apiConfig);
+
     const liveFixtures = response.data.response;
 
     for (const liveFixture of liveFixtures) {
-      const game = gamesInProgress.find(
+      const game = gamesToUpdate.find(
         (g) => g.externalApiId === `apif_${liveFixture.fixture.id}`
       );
       if (!game) continue;
@@ -263,4 +292,3 @@ const syncLiveGames = async (io) => {
 };
 
 module.exports = { syncGames, syncLiveGames };
-// Note: The syncLiveGames function is designed to be called periodically (e.g., every minute) to update live game data and resolve bets when games finish.

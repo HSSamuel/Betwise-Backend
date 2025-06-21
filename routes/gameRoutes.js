@@ -23,12 +23,14 @@ const {
   validateUpdateGame,
   updateGame,
   cancelGame,
-  validateAdjustOdds, // New Import
-  adjustOdds, // New Import
+  validateAdjustOdds,
+  getLiveGames,
+  adjustOdds,
 } = require("../controllers/gameController");
 
 // --- Public Routes ---
 router.get("/", validateGetGames, handleValidationErrors, getGames);
+router.get("/live", getLiveGames); 
 router.get("/feed", auth, getPersonalizedGames);
 router.get("/suggestions", auth, getGameSuggestions);
 router.get(
@@ -90,5 +92,10 @@ router.patch(
   handleValidationErrors,
   adjustOdds
 );
+
+// --- Public Routes ---
+router.get("/", validateGetGames, handleValidationErrors, getGames);
+router.get("/live", getLiveGames); // <-- ADD THIS NEW ROUTE
+router.get("/feed", auth, getPersonalizedGames);
 
 module.exports = router;

@@ -11,6 +11,22 @@ const { generateOddsForGame } = require("../services/oddsService");
 const { resolveBetsForGame } = require("../services/betResolutionService");
 
 // --- Define all functions and validation rules as local constants ---
+const getLiveGames = async (req, res, next) => {
+  try {
+    const games = await Game.find({
+      $or: [
+        { status: "live" },
+        { status: "upcoming", matchDate: { $lte: new Date() } },
+      ],
+    })
+      .sort({ matchDate: -1 })
+      .limit(50)
+      .lean();
+    res.json({ games });
+  } catch (error) {
+    next(error);
+  }
+};
 
 const validateGetGames = [
   query("league").optional().isString().trim().escape(),
@@ -190,12 +206,10 @@ const createGame = async (req, res, next) => {
       summary: gameSummary,
     });
     await game.save();
-    res
-      .status(201)
-      .json({
-        message: `Match added: ${game.homeTeam} vs ${game.awayTeam}.`,
-        game,
-      });
+    res.status(201).json({
+      message: `Match added: ${game.homeTeam} vs ${game.awayTeam}.`,
+      game,
+    });
   } catch (error) {
     next(error);
   }
@@ -309,12 +323,10 @@ const cancelGame = async (req, res, next) => {
 
 const createMultipleGames = async (req, res, next) => {
   const createdGames = await Game.insertMany(req.body, { ordered: false });
-  res
-    .status(201)
-    .json({
-      msg: `Successfully created ${createdGames.length} new games.`,
-      createdGames,
-    });
+  res.status(201).json({
+    msg: `Successfully created ${createdGames.length} new games.`,
+    createdGames,
+  });
 };
 
 const getPersonalizedGames = async (req, res, next) => {
@@ -411,6 +423,6 @@ module.exports = {
   getGameSuggestions,
   getGameOddsHistory,
   createMultipleGames,
+  getLiveGames,
   adjustOdds,
 };
-//   `Socket ${socket.id} joined user room: ${userId}`

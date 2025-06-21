@@ -10,12 +10,13 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const connectDB = require("./config/db");
 require("./config/passport-setup");
+const Game = require("./models/Game");
 const cron = require("node-cron");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const { syncGames, syncLiveGames } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
-const AviatorService = require("./services/aviatorService"); // Import the new Aviator service
+const AviatorService = require("./services/aviatorService");
 
 const app = express();
 const server = http.createServer(app);
@@ -42,7 +43,6 @@ const io = new Server(server, {
   cors: corsOptions,
 });
 
-// Create and start the Aviator game instance
 const aviatorService = new AviatorService(io);
 if (process.env.NODE_ENV !== "test") {
   aviatorService.start();
@@ -51,7 +51,6 @@ if (process.env.NODE_ENV !== "test") {
 app.set("json spaces", 2);
 app.use((req, res, next) => {
   req.io = io;
-  // Make the aviator service instance available to all routes
   req.aviatorService = aviatorService;
   next();
 });
@@ -77,7 +76,6 @@ const authLimiter = rateLimit({
 });
 
 app.use("/api", generalApiLimiter);
-
 const apiVersion = "/api/v1";
 
 app.use(`${apiVersion}/auth`, authLimiter, require("./routes/authRoutes"));
@@ -87,9 +85,9 @@ app.use(`${apiVersion}/wallet`, require("./routes/walletRoutes"));
 app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
 app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
-// NEW: Add the routes for the Aviator game
 app.use(`${apiVersion}/aviator`, require("./routes/aviatorRoutes"));
 
+// This middleware is the gatekeeper for all socket connections.
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -104,8 +102,25 @@ io.use((socket, next) => {
   });
 });
 
+// This block handles events for each successfully connected client.
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
+
+  const sendCurrentLiveGames = async () => {
+    try {
+      const liveGames = await Game.find({
+        $or: [
+          { status: "live" },
+          { status: "upcoming", matchDate: { $lte: new Date() } },
+        ],
+      });
+      socket.emit("allLiveGames", liveGames);
+    } catch (error) {
+      console.error("Error fetching initial live games for socket:", error);
+    }
+  };
+  sendCurrentLiveGames();
+
   socket.on("joinUserRoom", (userId) => {
     if (socket.user.id === userId) {
       socket.join(userId);
@@ -114,11 +129,13 @@ io.on("connection", (socket) => {
       );
     }
   });
+
   socket.on("disconnect", () => {
     console.log(`❌ Socket disconnected: ${socket.id}`);
   });
 });
 
+// This function starts the entire server and should only be called once.
 const startServer = async () => {
   try {
     await connectDB();
