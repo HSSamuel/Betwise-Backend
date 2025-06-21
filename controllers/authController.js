@@ -5,6 +5,7 @@ const { body, validationResult } = require("express-validator");
 const User = require("../models/User");
 const TokenBlacklist = require("../models/TokenBlacklist");
 const { sendEmail } = require("../services/emailService");
+const config = require("../config/env");
 
 // --- Helper Functions ---
 const generateAccessToken = (user) => {
@@ -95,7 +96,9 @@ exports.register = async (req, res, next) => {
       ],
     });
     if (user) {
-      return res.status(400).json({ msg: "Username or email already exists." });
+      const err = new Error("Username or email already exists.");
+      err.statusCode = 400;
+      return next(err);
     }
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
@@ -126,9 +129,6 @@ exports.register = async (req, res, next) => {
       },
     });
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ msg: "Username or email already exists." });
-    }
     next(error);
   }
 };
@@ -145,14 +145,12 @@ exports.login = async (req, res, next) => {
       "+password"
     );
 
-    // Specific check for user not found
     if (!user) {
       const err = new Error("No account found with that email address.");
       err.statusCode = 401; // Unauthorized
       return next(err);
     }
 
-    // Handle cases where user signed up with social media and has no password
     if (!user.password) {
       const err = new Error(
         "This account was created using a social login. Please sign in with Google or Facebook."
@@ -161,12 +159,6 @@ exports.login = async (req, res, next) => {
       return next(err);
     }
 
-    if (!user) {
-      const err = new Error("No account found with that email address.");
-      err.statusCode = 401;
-      return next(err);
-    }
-    //...
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       const err = new Error("Incorrect password. Please try again.");
@@ -174,7 +166,6 @@ exports.login = async (req, res, next) => {
       return next(err);
     }
 
-    // If successful, generate tokens and send user data
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
     res.json({

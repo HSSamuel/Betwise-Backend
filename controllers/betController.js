@@ -18,7 +18,6 @@ exports.validatePlaceBet = [
     .toFloat(),
 ];
 
-// FIX: Added a new validator for placing multiple single bets
 exports.validatePlaceMultipleSingles = [
   body("stakePerBet")
     .isFloat({ gt: 0 })
@@ -74,7 +73,8 @@ exports.validatePlaceMultiBet = [
   }),
 ];
 
-// --- REFACTORED placeBet Controller ---
+// --- Controller Functions ---
+
 exports.placeBet = async (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -85,35 +85,18 @@ exports.placeBet = async (req, res, next) => {
   const userId = req.user._id;
 
   try {
-    const user = await User.findById(userId);
-    if (!user) {
-      const err = new Error("User not found.");
-      err.statusCode = 404;
-      return next(err);
-    }
-
-    // 1. Perform all pre-checks using the service
-    bettingService.checkBettingLimits(user, stake);
-    await bettingService.checkForLossChasing(user, stake);
-
-    // 2. Execute the bet placement transaction via the service
-    const { bet, walletBalance } =
-      await bettingService.placeSingleBetTransaction(
-        userId,
-        gameId,
-        outcome,
-        stake
-      );
-
-    // If the service is successful, send the response.
+    const result = await bettingService.placeSingleBet(
+      userId,
+      gameId,
+      outcome,
+      stake
+    );
     res.status(201).json({
       msg: "Bet placed successfully!",
-      bet,
-      walletBalance,
+      bet: result.bet,
+      walletBalance: result.walletBalance,
     });
   } catch (error) {
-    // If the service throws any error (e.g., user not found, insufficient funds, limits exceeded),
-    // it will be caught here and passed to our centralized error handler.
     next(error);
   }
 };
@@ -207,7 +190,6 @@ exports.placeMultiBet = async (req, res, next) => {
   }
 };
 
-// FIX: Added new controller function to handle multiple single bets
 exports.placeMultipleSingles = async (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -266,7 +248,7 @@ exports.placeMultipleSingles = async (req, res, next) => {
         type: "bet",
         amount: -stakePerBet,
         balanceAfter:
-          user.walletBalance + totalStake - bets.length * stakePerBet, // Calculate balance after each bet
+          user.walletBalance + totalStake - bets.length * stakePerBet,
         bet: bet._id,
         game: game._id,
         description: `Bet on ${game.homeTeam} vs ${game.awayTeam}`,
@@ -291,21 +273,17 @@ exports.placeMultipleSingles = async (req, res, next) => {
 };
 
 exports.getUserBets = async (req, res, next) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
   try {
     const { status, gameId, page = 1, limit = 10 } = req.query;
 
     const filter = { user: req.user._id };
-
     if (status) filter.status = status;
     if (gameId) filter["selections.game"] = gameId;
 
     const skip = (page - 1) * limit;
 
+    // FIX: This query now populates BOTH the new `selections.game` path AND the
+    // legacy `game` path. This ensures all bets, new and old, have their game data.
     const bets = await Bet.find(filter)
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -314,13 +292,35 @@ exports.getUserBets = async (req, res, next) => {
         path: "selections.game",
         select: "homeTeam awayTeam league matchDate result",
       })
+      .populate({
+        path: "game", // Populate the legacy field
+        select: "homeTeam awayTeam league matchDate result",
+      })
       .lean();
+
+    // This block normalizes the data so the frontend doesn't have to handle two different structures.
+    // It creates a `selections` array for legacy bets.
+    const normalizedBets = bets.map((bet) => {
+      if ((!bet.selections || bet.selections.length === 0) && bet.game) {
+        return {
+          ...bet,
+          selections: [
+            {
+              game: bet.game,
+              outcome: bet.outcome,
+              odds: bet.totalOdds,
+            },
+          ],
+        };
+      }
+      return bet;
+    });
 
     const totalBets = await Bet.countDocuments(filter);
 
     res.status(200).json({
-      bets,
-      currentPage: page,
+      bets: normalizedBets,
+      currentPage: parseInt(page),
       totalPages: Math.ceil(totalBets / limit),
       totalCount: totalBets,
     });
@@ -345,6 +345,11 @@ exports.getBetById = async (req, res, next) => {
         select:
           "homeTeam awayTeam league matchDate result homeTeamLogo awayTeamLogo",
       })
+      .populate({
+        path: "game",
+        select:
+          "homeTeam awayTeam league matchDate result homeTeamLogo awayTeamLogo",
+      })
       .lean();
 
     if (!bet) {
@@ -353,6 +358,17 @@ exports.getBetById = async (req, res, next) => {
       );
       err.statusCode = 404;
       return next(err);
+    }
+
+    // Normalize data for the single bet view as well
+    if ((!bet.selections || bet.selections.length === 0) && bet.game) {
+      bet.selections = [
+        {
+          game: bet.game,
+          outcome: bet.outcome,
+          odds: bet.totalOdds,
+        },
+      ];
     }
 
     res.status(200).json(bet);

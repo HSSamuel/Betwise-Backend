@@ -415,22 +415,36 @@ exports.manualGameSync = async (req, res, next) => {
 exports.getGameRiskAnalysis = async (req, res, next) => {
   try {
     const { id: gameId } = req.params;
-    // This entire pipeline is business logic that can be moved
+
+    // FIX: The risk pipeline now includes a $project stage to calculate potentialPayout
     const riskPipeline = [
-      { $match: { game: new mongoose.Types.ObjectId(gameId) } },
+      { $match: { "selections.game": new mongoose.Types.ObjectId(gameId) } },
+      { $unwind: "$selections" }, // Deconstruct the selections array to process each one
+      { $match: { "selections.game": new mongoose.Types.ObjectId(gameId) } }, // Match again after unwind
+      {
+        $project: {
+          stake: 1,
+          outcome: "$selections.outcome",
+          odds: "$selections.odds",
+          // Dynamically calculate the potential payout for each bet
+          potentialPayout: { $multiply: ["$stake", "$selections.odds"] },
+        },
+      },
       {
         $group: {
-          _id: "$outcome",
+          _id: "$outcome", // Group by the outcome (A, B, Draw)
           totalStake: { $sum: "$stake" },
-          totalLiability: { $sum: "$potentialPayout" },
+          // Now we can sum the calculated potentialPayout
+          totalPotentialPayout: { $sum: "$potentialPayout" },
           betCount: { $sum: 1 },
         },
       },
-      { $sort: { totalLiability: -1 } },
+      { $sort: { totalPotentialPayout: -1 } },
     ];
-    const riskAnalysis = await Bet.aggregate(riskPipeline);
 
-    // Format the response for clarity
+    const riskAnalysis = await Bet.aggregate(riskPipeline);
+    const game = await Game.findById(gameId).lean(); // Fetch game details
+
     const formattedResponse = {
       gameId,
       totalExposure: 0,
@@ -438,6 +452,11 @@ exports.getGameRiskAnalysis = async (req, res, next) => {
         A: { totalStake: 0, totalPotentialPayout: 0, betCount: 0 },
         B: { totalStake: 0, totalPotentialPayout: 0, betCount: 0 },
         Draw: { totalStake: 0, totalPotentialPayout: 0, betCount: 0 },
+      },
+      gameDetails: {
+        homeTeam: game?.homeTeam,
+        awayTeam: game?.awayTeam,
+        league: game?.league,
       },
     };
 
@@ -451,7 +470,6 @@ exports.getGameRiskAnalysis = async (req, res, next) => {
       };
     });
 
-    // Calculate the total potential payout across all outcomes
     formattedResponse.totalExposure = parseFloat(
       Object.values(formattedResponse.outcomes)
         .reduce((sum, outcome) => sum + outcome.totalPotentialPayout, 0)
@@ -463,6 +481,7 @@ exports.getGameRiskAnalysis = async (req, res, next) => {
       analysis: formattedResponse,
     });
   } catch (error) {
+    // Pass the error to the centralized error handler
     next(error);
   }
 };

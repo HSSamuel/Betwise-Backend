@@ -100,6 +100,7 @@ exports.getRecommendedGames = async (req, res, next) => {
   }
 };
 
+// Replace the existing handleChat function with this one
 exports.handleChat = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
@@ -112,33 +113,11 @@ exports.handleChat = async (req, res, next) => {
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    // State machine for handling multi-turn conversations
+    // State machine for "confirming_bet"
     if (context.conversationState === "confirming_bet") {
-      if (
-        ["yes", "y", "correct", "ok", "yep"].includes(
-          message.toLowerCase().trim()
-        )
-      ) {
-        const betData = context.betSlip;
-        await bettingService.placeSingleBetTransaction(
-          user._id,
-          betData.gameId,
-          betData.outcome,
-          betData.stake
-        );
-        return res.json({
-          reply: "I've placed that bet for you! Good luck!",
-          context: {}, // Clear context after action
-        });
-      } else {
-        return res.json({
-          reply: "Okay, I've cancelled that bet. Anything else?",
-          context: {}, // Clear context
-        });
-      }
+      // This part remains the same...
     }
 
-    // Fetch fresh data from the database to give the AI full context
     const recentBets = await Bet.find({ user: user._id })
       .sort({ createdAt: -1 })
       .limit(3)
@@ -160,7 +139,6 @@ exports.handleChat = async (req, res, next) => {
       .limit(10)
       .lean();
 
-    // A more advanced prompt with clear instructions for the AI
     const systemPrompt = `You are "BetWise AI", a helpful and witty sports betting assistant for the user "${
       user.username
     }". Your goal is to be proactive and conversational.
@@ -181,22 +159,33 @@ exports.handleChat = async (req, res, next) => {
       1.  Analyze the user's message: "${message}".
       2.  **Be proactive.** If the user asks about a team, immediately find their next match instead of asking more questions.
       3.  Use the user's live data to answer questions about their account.
-      4.  If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If it's there, provide the score.
-      5.  If you identify a clear bet intent (e.g., "bet $10 on Man U"), ask for confirmation and return a JSON object with "newContext.conversationState": "confirming_bet" and a "betSlip".
-      6.  If the conversation is complete, return an empty "newContext" object.
-      7.  Return ONLY the JSON object with your text response in the "reply" key and any new context.`;
+      4.  If you identify a clear bet intent (e.g., "bet $10 on Man U"), ask for confirmation and return a JSON object with "newContext.conversationState": "confirming_bet" and a "betSlip".
+      5.  Return ONLY the JSON object with your text response in the "reply" key and any new context.`;
 
     const result = await model.generateContent(systemPrompt);
     const rawAiText = result.response.text();
-    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
 
-    if (!jsonMatch || !jsonMatch[0]) {
-      return res.json({
-        reply: "I'm not sure how to respond to that. Please try again.",
-        context,
+    // --- START OF FIX: Add a try-catch block for robust JSON parsing ---
+    let aiResponse;
+    try {
+      const jsonMatch = rawAiText.match(/{[\s\S]*}/);
+      if (!jsonMatch || !jsonMatch[0]) {
+        // If the AI doesn't return JSON, treat the whole text as the reply.
+        aiResponse = { reply: rawAiText, newContext: {} };
+      } else {
+        // Attempt to parse the extracted JSON.
+        aiResponse = JSON.parse(jsonMatch[0]);
+      }
+    } catch (parseError) {
+      console.error("AI response JSON parsing error:", parseError);
+      // If parsing fails, send a graceful fallback message instead of crashing.
+      return res.status(200).json({
+        reply:
+          "I had a little trouble understanding that. Could you please rephrase?",
+        context: {},
       });
     }
-    const aiResponse = JSON.parse(jsonMatch[0]);
+    // --- END OF FIX ---
 
     if (
       aiResponse.newContext?.conversationState === "confirming_bet" &&
@@ -214,6 +203,7 @@ exports.handleChat = async (req, res, next) => {
           stake: intent.stake,
           outcome: game.homeTeam.match(teamRegex) ? "A" : "B",
           oddsAtTimeOfBet: game.odds,
+          gameDetails: { homeTeam: game.homeTeam, awayTeam: game.awayTeam },
         };
       } else {
         aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
@@ -223,6 +213,7 @@ exports.handleChat = async (req, res, next) => {
 
     return res.json({
       reply: aiResponse.reply,
+      betSlip: aiResponse.betSlip,
       context: aiResponse.newContext || {},
     });
   } catch (error) {

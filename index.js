@@ -15,6 +15,7 @@ const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const { syncGames, syncLiveGames } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
+const AviatorService = require("./services/aviatorService"); // Import the new Aviator service
 
 const app = express();
 const server = http.createServer(app);
@@ -36,14 +37,22 @@ const corsOptions = {
   credentials: true,
 };
 
-app.use(cors(corsOptions));
 const io = new Server(server, {
   cors: corsOptions,
+  path: "/api/v1/socket.io/",
 });
+
+// Create and start the Aviator game instance
+const aviatorService = new AviatorService(io);
+if (process.env.NODE_ENV !== "test") {
+  aviatorService.start();
+}
 
 app.set("json spaces", 2);
 app.use((req, res, next) => {
   req.io = io;
+  // Make the aviator service instance available to all routes
+  req.aviatorService = aviatorService;
   next();
 });
 
@@ -78,6 +87,8 @@ app.use(`${apiVersion}/wallet`, require("./routes/walletRoutes"));
 app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
 app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
+// NEW: Add the routes for the Aviator game
+app.use(`${apiVersion}/aviator`, require("./routes/aviatorRoutes"));
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
@@ -119,20 +130,16 @@ const startServer = async () => {
         } mode.`
       );
 
-      // Cron job for UPCOMING games
       cron.schedule("*/30 * * * *", () => {
         console.log("🕒 Cron: Fetching upcoming games from API-Football...");
         syncGames("apifootball");
       });
 
-      // Interval for LIVE games
       setInterval(() => {
         console.log("🕒 Interval: Syncing live game data...");
         syncLiveGames(io);
       }, 60000);
 
-      // --- NEW: Cron job for Platform Risk Analysis ---
-      // This will run every 15 minutes to check for high-risk games.
       cron.schedule("*/15 * * * *", () => {
         console.log("🕒 Cron: Analyzing platform risk...");
         analyzePlatformRisk();

@@ -71,15 +71,29 @@ async function run() {
     // --- Simulate Bet ---
     const betAmount = 200.0;
     if (user.walletBalance >= betAmount) {
+      // NOTE: In a real transaction, you would use a session and deduct the balance
+      // only after confirming the bet can be created. For this simulation, this is sufficient.
       user.walletBalance -= betAmount;
       await user.save();
-
       // Step 1: Create the actual Bet document
       const newBet = new Bet({
         user: user._id,
-        game: gameToBetOn._id,
-        outcome: "A", // Bet on home team to win
+        betType: "single", // Explicitly set the betType
+        selections: [
+          {
+            // Use the new 'selections' array for consistency
+            game: gameToBetOn._id,
+            outcome: "A",
+            odds: gameToBetOn.odds.home,
+          },
+        ],
         stake: betAmount,
+        totalOdds: gameToBetOn.odds.home, // FIX: Added the required totalOdds field
+        // Legacy fields for single bet clarity, though selections is preferred
+        game: gameToBetOn._id,
+        outcome: "A",
+        oddsAtTimeOfBet: gameToBetOn.odds,
+        payout: betAmount * gameToBetOn.odds.home, // Pre-calculate potential payout
       });
       await newBet.save();
       console.log(`🎲 Simulated bet placed with ID: ${newBet._id}`);
