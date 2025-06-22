@@ -5,7 +5,7 @@ const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
 const { query, body, param, validationResult } = require("express-validator");
 const mongoose = require("mongoose");
-const { syncGames } = require("../services/sportsDataService");
+const { syncUpcomingGames } = require("../services/sportsDataService");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/env"); // <-- IMPORT the new config
 
@@ -199,6 +199,7 @@ exports.listUsers = async (req, res, next) => {
       search,
       flagged,
     } = req.query;
+
     const filter = {};
     if (role) filter.role = role;
     if (search) {
@@ -213,17 +214,27 @@ exports.listUsers = async (req, res, next) => {
     if (flagged !== undefined) {
       filter["flags.isFlaggedForFraud"] = flagged;
     }
-    const safeSortBy = /^[a-zA-Z0-9_]+$/.test(sortBy) ? sortBy : "createdAt";
-    const sortOptions = { [safeSortBy]: order === "asc" ? 1 : -1 };
-    const users = await User.find(filter)
+
+    const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
+
+    // Perform two separate queries: one for admins, one for users
+    const admins = await User.find({ ...filter, role: "admin" })
       .select("-password")
       .sort(sortOptions)
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit))
       .lean();
-    const totalUsers = await User.countDocuments(filter);
+    const users = await User.find({ ...filter, role: "user" })
+      .select("-password")
+      .sort(sortOptions)
+      .lean();
+
+    // Combine the results, with admins always first
+    const allUsers = [...admins, ...users];
+
+    const totalUsers = allUsers.length;
+    const paginatedUsers = allUsers.slice((page - 1) * limit, page * limit);
+
     res.json({
-      users,
+      users: paginatedUsers,
       currentPage: parseInt(page),
       totalPages: Math.ceil(totalUsers / parseInt(limit)),
       totalCount: totalUsers,
@@ -398,11 +409,12 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
   }
 };
 
-// FIX: This function now has access to syncGames and will work correctly.
+// This function has access to syncGames.
 exports.manualGameSync = async (req, res, next) => {
   const { source = "apifootball" } = req.body;
   try {
-    await syncGames(source);
+    // Call the correctly named function
+    await syncUpcomingGames(source);
     res.status(200).json({
       msg: `Synchronization from '${source}' has been successfully triggered.`,
     });

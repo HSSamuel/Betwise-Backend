@@ -1,5 +1,3 @@
-// In: Backend/index.js
-
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
@@ -12,14 +10,19 @@ const connectDB = require("./config/db");
 require("./config/passport-setup");
 const cron = require("node-cron");
 const jwt = require("jsonwebtoken");
-// FIX: Import both syncGames and syncLiveGames
-const { syncGames, syncLiveGames } = require("./services/sportsDataService");
+
+// Correctly import all necessary services and routes
+const {
+  syncGames,
+  syncLiveAndFinishedGames,
+} = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
+const AviatorService = require("./services/aviatorService");
+const aviatorRoutes = require("./routes/aviatorRoutes");
 
 const app = express();
 const server = http.createServer(app);
 
-// --- Robust CORS Configuration ---
 const allowedOrigins = [
   "http://localhost:5173",
   "https://betwise-frontend-5uqq.vercel.app",
@@ -37,33 +40,33 @@ const corsOptions = {
   credentials: true,
 };
 
-// --- Apply CORS to both Express and Socket.IO ---
 app.use(cors(corsOptions));
 const io = new Server(server, {
   cors: corsOptions,
 });
 
-app.set("json spaces", 2);
+// Initialize services and make them available to routes
+const aviatorService = new AviatorService(io);
 app.use((req, res, next) => {
   req.io = io;
+  req.aviatorService = aviatorService;
   next();
 });
 
-// FIX: Removed duplicate middleware declarations. This is the correct, single block.
+// Standard middleware
 app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
-// --- Rate Limiting Setup ---
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 1000,
+  max: 100, // Reduced from 1000 for a more realistic limit
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use("/api", generalApiLimiter);
 
-// --- Route Definitions (with API Versioning) ---
+// Register API routes
 const apiVersion = "/api/v1";
 app.use(`${apiVersion}/auth`, require("./routes/authRoutes"));
 app.use(`${apiVersion}/games`, require("./routes/gameRoutes"));
@@ -72,8 +75,9 @@ app.use(`${apiVersion}/wallet`, require("./routes/walletRoutes"));
 app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
 app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
+app.use(`${apiVersion}/aviator`, aviatorRoutes);
 
-// --- Socket.IO Authentication Middleware ---
+// Socket.IO Authentication Middleware
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -88,7 +92,7 @@ io.use((socket, next) => {
   });
 });
 
-// --- Centralized Socket.IO Connection Logic ---
+// Socket.IO Connection Logic
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
   socket.on("joinUserRoom", (userId) => {
@@ -104,7 +108,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// --- Server Startup ---
+// Server Startup Logic
 const startServer = async () => {
   try {
     await connectDB();
@@ -116,19 +120,25 @@ const startServer = async () => {
         } mode.`
       );
 
-      // FIX: Added the cron job for syncing LIVE games every minute
+      aviatorService.start();
+
+      // --- CORRECTED CRON JOB CONFIGURATION ---
+
+      // 1. Sync LIVE and FINISHED games every minute from API-Football
       cron.schedule("* * * * *", () => {
-        console.log("🕒 Cron: Syncing live game data...");
-        syncLiveGames(io);
+        console.log("🕒 Cron: Syncing live and finished game data...");
+        // This is the corrected line that calls the function
+        syncLiveAndFinishedGames(io);
       });
 
-      // Cron job for fetching upcoming games
+      // 2. Sync UPCOMING games from both providers every 30 minutes
       cron.schedule("*/30 * * * *", () => {
-        console.log("🕒 Cron: Fetching upcoming games from API-Football...");
+        console.log("🕒 Cron: Fetching upcoming games from all providers...");
         syncGames("apifootball");
+        syncGames("thesportsdb");
       });
 
-      // Cron job for platform risk analysis
+      // 3. Monitor platform risk every 5 minutes
       cron.schedule("*/5 * * * *", async () => {
         console.log("🤖 Cron: Monitoring platform risk...");
         try {
@@ -141,7 +151,7 @@ const startServer = async () => {
         }
       });
 
-      console.log("✅ All background tasks have been scheduled.");
+      console.log("✅ All background tasks have been scheduled correctly.");
     });
   } catch (dbConnectionError) {
     console.error(

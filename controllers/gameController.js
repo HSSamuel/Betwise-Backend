@@ -168,6 +168,7 @@ const getGames = async (req, res, next) => {
   const { league, status, date, page = 1, limit = 10 } = req.query;
   const filter = {};
   if (league) filter.league = { $regex: new RegExp(league, "i") };
+  filter.status = status;
   if (status) filter.status = status;
   if (date) {
     const startDate = new Date(new Date(date).setHours(0, 0, 0, 0));
