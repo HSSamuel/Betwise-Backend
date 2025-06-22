@@ -5,7 +5,7 @@ const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
 const { query, body, param, validationResult } = require("express-validator");
 const mongoose = require("mongoose");
-const { syncUpcomingGames } = require("../services/sportsDataService");
+const { syncGames } = require("../services/sportsDataService");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/env"); // <-- IMPORT the new config
 
@@ -413,8 +413,8 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
 exports.manualGameSync = async (req, res, next) => {
   const { source = "apifootball" } = req.body;
   try {
-    // Call the correctly named function
-    await syncUpcomingGames(source);
+    // FIX: Call the correctly named 'syncGames' function
+    await syncGames(source);
     res.status(200).json({
       msg: `Synchronization from '${source}' has been successfully triggered.`,
     });

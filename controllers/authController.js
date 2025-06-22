@@ -282,13 +282,9 @@ exports.requestPasswordReset = async (req, res, next) => {
     user.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
     await user.save({ validateBeforeSave: false });
 
-    // --- MODIFICATION IS HERE ---
+    const appName = config.APP_NAME;
+    const resetUrl = `${config.FRONTEND_URL}/reset-password/${resetToken}`;
 
-    const appName = config.APP_NAME; // <-- USE config
-    // Create the full reset URL for the frontend
-    const resetUrl = `${config.FRONTEND_URL}/reset-password/${resetToken}`; // <-- USE config
-
-    // Create a more user-friendly HTML message
     const messageHtml = `
       <div style="font-family: Arial, sans-serif; color: #333;">
         <h2>Password Reset for ${appName}</h2>
@@ -302,28 +298,30 @@ exports.requestPasswordReset = async (req, res, next) => {
       </div>
     `;
 
-    // --- END MODIFICATION ---
-
     try {
-      // Send the email with the new HTML body
       await sendEmail({
         to: user.email,
         subject: `Your ${appName} Password Reset Link (valid for 10 min)`,
-        html: messageHtml, // Use the 'html' property instead of 'message' for HTML content
+        html: messageHtml,
       });
 
       res.status(200).json({
         msg: "If your email address is registered with us, you will receive a password reset link shortly.",
       });
     } catch (emailError) {
+      // FIX: The error is logged on the server, but we still send a generic
+      // success response to the user to prevent email enumeration.
+      console.error("EMAIL_SEND_ERROR:", emailError.message);
+
+      // Clean up the token since the email failed
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
       await user.save({ validateBeforeSave: false });
-      const serverError = new Error(
-        "The server encountered an error trying to send the password reset email. Please try again later."
-      );
-      serverError.statusCode = 500;
-      next(serverError);
+
+      // Send the same generic response
+      res.status(200).json({
+        msg: "If your email address is registered with us, you will receive a password reset link shortly.",
+      });
     }
   } catch (error) {
     next(error);

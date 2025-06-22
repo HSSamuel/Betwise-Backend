@@ -11,12 +11,13 @@ require("./config/passport-setup");
 const cron = require("node-cron");
 const jwt = require("jsonwebtoken");
 
-// Correctly import all necessary services and routes
 const {
   syncGames,
   syncLiveAndFinishedGames,
 } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
+// FIX: Make sure this new script is imported
+const { cleanupStaleGames } = require("./scripts/cleanupStaleGames");
 const AviatorService = require("./services/aviatorService");
 const aviatorRoutes = require("./routes/aviatorRoutes");
 
@@ -45,7 +46,6 @@ const io = new Server(server, {
   cors: corsOptions,
 });
 
-// Initialize services and make them available to routes
 const aviatorService = new AviatorService(io);
 app.use((req, res, next) => {
   req.io = io;
@@ -53,20 +53,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Standard middleware
 app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100, // Reduced from 1000 for a more realistic limit
+  max: 100,
   standardHeaders: true,
   legacyHeaders: false,
 });
 app.use("/api", generalApiLimiter);
 
-// Register API routes
 const apiVersion = "/api/v1";
 app.use(`${apiVersion}/auth`, require("./routes/authRoutes"));
 app.use(`${apiVersion}/games`, require("./routes/gameRoutes"));
@@ -77,7 +75,6 @@ app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
 app.use(`${apiVersion}/aviator`, aviatorRoutes);
 
-// Socket.IO Authentication Middleware
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (!token) {
@@ -92,7 +89,6 @@ io.use((socket, next) => {
   });
 });
 
-// Socket.IO Connection Logic
 io.on("connection", (socket) => {
   console.log(`✅ Authenticated socket connected: ${socket.id}`);
   socket.on("joinUserRoom", (userId) => {
@@ -108,7 +104,6 @@ io.on("connection", (socket) => {
   });
 });
 
-// Server Startup Logic
 const startServer = async () => {
   try {
     await connectDB();
@@ -122,23 +117,30 @@ const startServer = async () => {
 
       aviatorService.start();
 
-      // --- CORRECTED CRON JOB CONFIGURATION ---
-
-      // 1. Sync LIVE and FINISHED games every minute from API-Football
-      cron.schedule("* * * * *", () => {
+      cron.schedule("* * * * *", async () => {
         console.log("🕒 Cron: Syncing live and finished game data...");
-        // This is the corrected line that calls the function
-        syncLiveAndFinishedGames(io);
+        try {
+          await syncLiveAndFinishedGames(io);
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled live/finished games sync:",
+            error.message
+          );
+        }
       });
 
-      // 2. Sync UPCOMING games from both providers every 30 minutes
-      cron.schedule("*/30 * * * *", () => {
+      cron.schedule("*/30 * * * *", async () => {
         console.log("🕒 Cron: Fetching upcoming games from all providers...");
-        syncGames("apifootball");
-        syncGames("thesportsdb");
+        try {
+          await syncGames("allsportsapi"); // Defaulting to the new provider
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled upcoming games sync:",
+            error.message
+          );
+        }
       });
 
-      // 3. Monitor platform risk every 5 minutes
       cron.schedule("*/5 * * * *", async () => {
         console.log("🤖 Cron: Monitoring platform risk...");
         try {
@@ -146,6 +148,19 @@ const startServer = async () => {
         } catch (error) {
           console.error(
             "❌ Error during scheduled risk analysis:",
+            error.message
+          );
+        }
+      });
+
+      // FIX: Add the new cron job for cleaning up stale games, scheduled to run every hour.
+      cron.schedule("0 * * * *", async () => {
+        console.log("🕒 Cron: Running stale game cleanup...");
+        try {
+          await cleanupStaleGames();
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled game cleanup:",
             error.message
           );
         }

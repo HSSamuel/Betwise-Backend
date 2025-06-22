@@ -13,12 +13,7 @@ const { resolveBetsForGame } = require("../services/betResolutionService");
 // --- Define all functions and validation rules as local constants ---
 const getLiveGames = async (req, res, next) => {
   try {
-    const games = await Game.find({
-      $or: [
-        { status: "live" },
-        { status: "upcoming", matchDate: { $lte: new Date() } },
-      ],
-    })
+    const games = await Game.find({ status: "live" })
       .sort({ matchDate: -1 })
       .limit(50)
       .lean();
@@ -168,8 +163,12 @@ const getGames = async (req, res, next) => {
   const { league, status, date, page = 1, limit = 10 } = req.query;
   const filter = {};
   if (league) filter.league = { $regex: new RegExp(league, "i") };
-  filter.status = status;
-  if (status) filter.status = status;
+
+  // FIX: Only add the 'status' property to the filter if it exists in the query.
+  if (status) {
+    filter.status = status;
+  }
+
   if (date) {
     const startDate = new Date(new Date(date).setHours(0, 0, 0, 0));
     const endDate = new Date(new Date(date).setHours(23, 59, 59, 999));
@@ -355,11 +354,11 @@ const getGameSuggestions = async (req, res, next) => {
   const filter = { status: "upcoming", _id: { $nin: betOnGameIds } };
   if (user.favoriteLeagues && user.favoriteLeagues.length > 0) {
     filter.league = { $in: user.favoriteLeagues };
-    suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(5);
+    suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(3);
   }
   if (suggestedGames.length === 0) {
     delete filter.league;
-    suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(5);
+    suggestedGames = await Game.find(filter).sort({ matchDate: 1 }).limit(3);
   }
   res.json({
     message: "Here are some game suggestions for you.",
