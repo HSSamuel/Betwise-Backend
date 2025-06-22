@@ -4,11 +4,16 @@ const { body, validationResult } = require("express-validator");
 const Game = require("../models/Game");
 const Bet = require("../models/Bet");
 const User = require("../models/User");
+const Transaction = require("../models/Transaction");
+const Withdrawal = require("../models/Withdrawal");
+const bettingService = require("../services/bettingService");
 const {
   generateRecommendations,
 } = require("../services/recommendationService");
 
+// This global variable will hold the initialized AI client.
 let genAI;
+
 try {
   if (!process.env.GEMINI_API_KEY) {
     console.error(
@@ -34,7 +39,6 @@ const formatTransactionsForPrompt = (transactions) => {
     .join("\n  ");
 };
 
-// FIX: Removed the duplicate declaration of this function.
 const formatBetsForPrompt = (bets) => {
   if (!bets || bets.length === 0) return "No recent bets found.";
   return bets
@@ -62,11 +66,9 @@ const formatResultsForPrompt = (games) => {
   return games
     .map(
       (game) =>
-        `- ${game.homeTeam} ${game.scores.home || "N/A"} - ${
-          game.scores.away || "N/A"
-        } ${game.awayTeam} (League: ${
-          game.league
-        }, Date: ${game.matchDate.toDateString()})`
+        `- ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${
+          game.awayTeam
+        } (League: ${game.league}, Date: ${game.matchDate.toDateString()})`
     )
     .join("\n  ");
 };
@@ -100,7 +102,6 @@ exports.getRecommendedGames = async (req, res, next) => {
   }
 };
 
-// Replace the existing handleChat function with this one
 exports.handleChat = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
@@ -113,9 +114,29 @@ exports.handleChat = async (req, res, next) => {
     const user = await User.findById(req.user._id).lean();
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    // State machine for "confirming_bet"
     if (context.conversationState === "confirming_bet") {
-      // This part remains the same...
+      if (
+        ["yes", "y", "correct", "ok", "yep"].includes(
+          message.toLowerCase().trim()
+        )
+      ) {
+        const betData = context.betSlip;
+        await bettingService.placeSingleBetTransaction(
+          user._id,
+          betData.gameId,
+          betData.outcome,
+          betData.stake
+        );
+        return res.json({
+          reply: "I've placed that bet for you! Good luck!",
+          context: {},
+        });
+      } else {
+        return res.json({
+          reply: "Okay, I've cancelled that bet. Anything else?",
+          context: {},
+        });
+      }
     }
 
     const recentBets = await Bet.find({ user: user._id })
@@ -139,53 +160,35 @@ exports.handleChat = async (req, res, next) => {
       .limit(10)
       .lean();
 
-    const systemPrompt = `You are "BetWise AI", a helpful and witty sports betting assistant for the user "${
+    const systemPrompt = `You are an advanced, multi-turn conversational AI for "BetWise". The user is "${
       user.username
-    }". Your goal is to be proactive and conversational.
-
-      CURRENT CONVERSATIONAL CONTEXT:
-      ${JSON.stringify(context, null, 2)}
-
-      USER'S LIVE ACCOUNT DATA:
+    }". Your goal is to be helpful and accurate.
+      CURRENT CONTEXT: ${JSON.stringify(context, null, 2)}
+      USER'S LIVE DATA:
       - Wallet Balance: $${user.walletBalance.toFixed(2)}
       - Recent Bets: ${formatBetsForPrompt(recentBets)}
       - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
       - Pending Withdrawal: ${withdrawalStatus}
-
-      RECENT GAME RESULTS FROM DATABASE:
+      RECENT GAME RESULTS:
       ${formatResultsForPrompt(recentResults)}
-
       YOUR TASK:
-      1.  Analyze the user's message: "${message}".
-      2.  **Be proactive.** If the user asks about a team, immediately find their next match instead of asking more questions.
-      3.  Use the user's live data to answer questions about their account.
-      4.  If you identify a clear bet intent (e.g., "bet $10 on Man U"), ask for confirmation and return a JSON object with "newContext.conversationState": "confirming_bet" and a "betSlip".
-      5.  Return ONLY the JSON object with your text response in the "reply" key and any new context.`;
+      1. Analyze the user's message: "${message}".
+      2. If the user asks for a game result, check the "RECENT GAME RESULTS" list first. If the game is there, provide the score.
+      3. Only if the result is NOT in the list, state you don't have the information.
+      4. If you identify a bet intent, ask for confirmation and return a JSON with "newContext.conversationState": "confirming_bet" and a "betSlip".
+      Return ONLY the JSON object.`;
 
     const result = await model.generateContent(systemPrompt);
     const rawAiText = result.response.text();
+    const jsonMatch = rawAiText.match(/{[\s\S]*}/);
 
-    // --- START OF FIX: Add a try-catch block for robust JSON parsing ---
-    let aiResponse;
-    try {
-      const jsonMatch = rawAiText.match(/{[\s\S]*}/);
-      if (!jsonMatch || !jsonMatch[0]) {
-        // If the AI doesn't return JSON, treat the whole text as the reply.
-        aiResponse = { reply: rawAiText, newContext: {} };
-      } else {
-        // Attempt to parse the extracted JSON.
-        aiResponse = JSON.parse(jsonMatch[0]);
-      }
-    } catch (parseError) {
-      console.error("AI response JSON parsing error:", parseError);
-      // If parsing fails, send a graceful fallback message instead of crashing.
-      return res.status(200).json({
-        reply:
-          "I had a little trouble understanding that. Could you please rephrase?",
-        context: {},
+    if (!jsonMatch || !jsonMatch[0]) {
+      return res.json({
+        reply: "Sorry, I had a little trouble. Could you rephrase?",
+        context,
       });
     }
-    // --- END OF FIX ---
+    const aiResponse = JSON.parse(jsonMatch[0]);
 
     if (
       aiResponse.newContext?.conversationState === "confirming_bet" &&
@@ -203,22 +206,78 @@ exports.handleChat = async (req, res, next) => {
           stake: intent.stake,
           outcome: game.homeTeam.match(teamRegex) ? "A" : "B",
           oddsAtTimeOfBet: game.odds,
-          gameDetails: { homeTeam: game.homeTeam, awayTeam: game.awayTeam },
         };
       } else {
         aiResponse.reply = `I couldn't find an upcoming game for ${intent.teamToBetOn}.`;
         aiResponse.newContext = {};
       }
     }
-
     return res.json({
       reply: aiResponse.reply,
-      betSlip: aiResponse.betSlip,
       context: aiResponse.newContext || {},
     });
   } catch (error) {
     console.error("AI chat handler error:", error);
     next(error);
+  }
+};
+
+exports.parseBetIntent = async (req, res, next) => {
+  try {
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+    const { message: text } = req.body;
+    if (!text) return null;
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `From the user's text, extract betting information into a valid JSON object. The JSON object must have "stake" (number) and "teamToBetOn" (string).
+        Here are some examples:
+        - User text: "I want to put 500 on manchester united to win"
+        - JSON: { "stake": 500, "teamToBetOn": "Manchester United" }
+        - User text: "bet $25 on Real Madrid"
+        - JSON: { "stake": 25, "teamToBetOn": "Real Madrid" }
+        - User text: "Can you place a hundred on chelsea for me"
+        - JSON: { "stake": 100, "teamToBetOn": "Chelsea" }
+        Now, analyze this user's text and return only the JSON object: "${text}"`;
+
+    const result = await model.generateContent(prompt);
+    const rawAiText = result.response.text();
+    const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch || !jsonMatch[0]) return null;
+
+    const intent = JSON.parse(jsonMatch[0]);
+    if (!intent.stake || !intent.teamToBetOn) return null;
+
+    const teamToBetOnRegex = new RegExp(intent.teamToBetOn, "i");
+    const game = await Game.findOne({
+      status: "upcoming",
+      $or: [{ homeTeam: teamToBetOnRegex }, { awayTeam: teamToBetOnRegex }],
+    });
+
+    if (game) {
+      const outcome = game.homeTeam
+        .toLowerCase()
+        .includes(intent.teamToBetOn.toLowerCase())
+        ? "A"
+        : "B";
+      return {
+        reply: `I found a match: ${game.homeTeam} vs ${
+          game.awayTeam
+        }. You want to bet $${
+          intent.stake
+        } on ${intent.teamToBetOn.toLowerCase()} to win. Is this correct? (yes/no)`,
+        betSlip: {
+          gameId: game._id,
+          gameDetails: { homeTeam: game.homeTeam, awayTeam: game.awayTeam },
+          stake: intent.stake,
+          outcome: outcome,
+          oddsAtTimeOfBet: game.odds,
+        },
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error("AI parseBetIntent error:", error);
+    return null;
   }
 };
 
@@ -237,19 +296,21 @@ exports.generateGameSummary = async (homeTeam, awayTeam, league) => {
 
 exports.analyzeGame = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized.");
+    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const errors = validationResult(req);
-    if (!errors.isEmpty())
+    if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
-
+    }
     const { gameId } = req.body;
     const game = await Game.findById(gameId);
-    if (!game) return res.status(404).json({ msg: "Game not found." });
-    if (game.status !== "upcoming")
+    if (!game) {
+      return res.status(404).json({ msg: "Game not found." });
+    }
+    if (game.status !== "upcoming") {
       return res
         .status(400)
         .json({ msg: "AI analysis is only available for upcoming games." });
-
+    }
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
     const result = await model.generateContent(prompt);
@@ -475,6 +536,7 @@ exports.getNewsSummary = async (req, res, next) => {
   }
 };
 
+// Caching logic remains the same
 let newsCache = { data: null, timestamp: null };
 const CACHE_DURATION_MS = 3600000;
 
@@ -484,11 +546,12 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     if (newsCache.data && now - newsCache.timestamp < CACHE_DURATION_MS) {
       return res.status(200).json(newsCache.data);
     }
+
     const apiKey = process.env.GOOGLE_API_KEY;
     const cseId = process.env.GOOGLE_CSE_ID;
-    if (!apiKey || !cseId)
+    if (!apiKey || !cseId) {
       throw new Error("Google Search API Key or CSE ID is not configured.");
-
+    }
     const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}&q=top+world+football+news`;
     const searchResponse = await axios.get(searchUrl);
     if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
@@ -496,7 +559,6 @@ exports.getGeneralSportsNews = async (req, res, next) => {
         .status(404)
         .json({ message: "Could not find any recent sports news." });
     }
-
     const newsItems = searchResponse.data.items.slice(0, 5).map((item) => ({
       title: item.title,
       link: item.link,
@@ -506,29 +568,6 @@ exports.getGeneralSportsNews = async (req, res, next) => {
     const responseData = { news: newsItems };
     newsCache = { data: responseData, timestamp: now };
     res.status(200).json(responseData);
-  } catch (error) {
-    console.error("General sports news error:", error.message);
-    next(error);
-  }
-};
-
-exports.parseBetIntent = async (req, res, next) => {
-  // This function was missing but is needed by other parts of the app
-  try {
-    if (!genAI) throw new Error("AI Service not initialized.");
-    const { text } = req.body;
-    if (!text) return res.status(400).json({ msg: "Text is required." });
-
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `From the text "${text}", extract the stake (number) and team name (string). Return a JSON object like {"stake": 50, "teamToBetOn": "Team Name"}.`;
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const jsonText = response.text().match(/{[\s\S]*}/);
-    if (jsonText) {
-      res.json(JSON.parse(jsonText[0]));
-    } else {
-      res.status(400).json({ msg: "Could not parse bet intent." });
-    }
   } catch (error) {
     next(error);
   }
