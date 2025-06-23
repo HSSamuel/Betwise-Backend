@@ -5,19 +5,10 @@ const Transaction = require("../models/Transaction");
 const User = require("../models/User");
 const config = require("../config/env");
 
-// Games still "live" for more than 4 hours after their start time are considered stale
 const STALE_GAME_THRESHOLD_HOURS = 4;
 
 const cleanupStaleGames = async () => {
   console.log("🤖 Starting stale game cleanup script...");
-  const dbUri = config.MONGODB_URI;
-  if (!dbUri) {
-    console.error("❌ Error: MONGODB_URI is not defined.");
-    return;
-  }
-
-  await mongoose.connect(dbUri);
-  console.log("✅ MongoDB connected for game cleanup.");
 
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -35,6 +26,8 @@ const cleanupStaleGames = async () => {
     if (staleGames.length === 0) {
       console.log("✅ No stale live games found. All clean!");
       await session.abortTransaction();
+      // We must end the session, but no longer disconnect mongoose.
+      session.endSession();
       return;
     }
 
@@ -81,13 +74,17 @@ const cleanupStaleGames = async () => {
     console.error("❌ An error occurred during stale game cleanup:", error);
   } finally {
     session.endSession();
-    await mongoose.disconnect();
-    console.log("ℹ️ MongoDB disconnected from cleanup script.");
   }
 };
 
+// This part is for running the script manually. We'll add connection logic here.
 if (require.main === module) {
-  cleanupStaleGames();
+  const runStandalone = async () => {
+    await mongoose.connect(config.MONGODB_URI);
+    await cleanupStaleGames();
+    await mongoose.disconnect();
+  };
+  runStandalone();
 }
 
 module.exports = { cleanupStaleGames };
