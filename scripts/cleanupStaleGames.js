@@ -36,7 +36,7 @@ const cleanupStaleGames = async () => {
     for (const game of staleGames) {
       game.status = "cancelled";
       game.result = null;
-      await game.save({ session });
+      await game.save({ session, validateBeforeSave: false });
 
       const betsToRefund = await Bet.find({
         "selections.game": game._id,

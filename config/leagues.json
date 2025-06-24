@@ -1,13 +1,72 @@
 [
-  { "id": 39, "name": "English Premier League" },
-  { "id": 140, "name": "La Liga (Spain)" },
-  { "id": 135, "name": "Serie A (Italy)" },
-  { "id": 78, "name": "Bundesliga (Germany)" },
-  { "id": 253, "name": "MLS (USA)" },
-  { "id": 61, "name": "Ligue 1 (France)" },
-  { "id": 307, "name": "Saudi Professional League" },
-  { "id": 203, "name": "Süper Lig (Turkey)" },
-  { "id": 1, "name": "World Cup" },
-  { "id": 4, "name": "Africa Cup of Nations" },
-  { "id": 15, "name": "Club World Cup" }
+  {
+    "name": "Premier League",
+    "apiFootballId": 39,
+    "allSportsApiId": 152
+  },
+  {
+    "name": "La Liga",
+    "apiFootballId": 140,
+    "allSportsApiId": 302
+  },
+  {
+    "name": "Serie A",
+    "apiFootballId": 135,
+    "allSportsApiId": 207
+  },
+  {
+    "name": "Bundesliga",
+    "apiFootballId": 78,
+    "allSportsApiId": 175
+  },
+  {
+    "name": "Ligue 1",
+    "apiFootballId": 61,
+    "allSportsApiId": 168
+  },
+  {
+    "name": "UEFA Champions League",
+    "apiFootballId": 2,
+    "allSportsApiId": 4
+  },
+  {
+    "name": "UEFA Europa League",
+    "apiFootballId": 3,
+    "allSportsApiId": 5
+  },
+  {
+    "name": "MLS",
+    "apiFootballId": 253,
+    "allSportsApiId": 262
+  },
+  {
+    "name": "Club World Cup",
+    "apiFootballId": 15,
+    "allSportsApiId": 134
+  },
+  {
+    "name": "Primeira Liga (Portugal)",
+    "apiFootballId": 94,
+    "allSportsApiId": 268
+  },
+  {
+    "name": "Eredivisie (Netherlands)",
+    "apiFootballId": 88,
+    "allSportsApiId": 223
+  },
+  {
+    "name": "Copa Libertadores",
+    "apiFootballId": 13,
+    "allSportsApiId": 103
+  },
+  {
+    "name": "FIFA World Cup",
+    "apiFootballId": 1,
+    "allSportsApiId": 1
+  },
+  {
+    "name": "Africa Cup of Nations",
+    "apiFootballId": 4,
+    "allSportsApiId": 35
+  }
 ]

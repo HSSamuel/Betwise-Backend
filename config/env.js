@@ -72,6 +72,7 @@ const config = {
     "X_RAPIDAPI_KEY",
     "API key for RapidAPI (used for TheSportsDB)."
   ),
+  ALLSPORTS_API_KEY: process.env.ALLSPORTS_API_KEY, // Added AllSportsApi key
 
   // Google APIs (OAuth & Search)
   GOOGLE_API_KEY: process.env.GOOGLE_API_KEY, // Optional for some scripts

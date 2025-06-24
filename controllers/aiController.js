@@ -7,9 +7,7 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
 const bettingService = require("../services/bettingService");
-const {
-  generateRecommendations,
-} = require("../services/recommendationService");
+const { fetchGeneralSportsNews } = require("../services/newsService");
 
 // This global variable will hold the initialized AI client.
 let genAI;
@@ -60,20 +58,6 @@ const formatBetsForPrompt = (bets) => {
     .join("\n  ");
 };
 
-const formatResultsForPrompt = (games) => {
-  if (!games || games.length === 0)
-    return "No recent results found in the database.";
-  return games
-    .map(
-      (game) =>
-        `- ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${
-          game.awayTeam
-        } (League: ${game.league}, Date: ${game.matchDate.toDateString()})`
-    )
-    .join("\n  ");
-};
-
-// --- NEW HELPER FUNCTION 1 ---
 const getLiveScoreUpdate = async (teamName) => {
   if (!teamName) return null;
 
@@ -90,49 +74,25 @@ const getLiveScoreUpdate = async (teamName) => {
   return null;
 };
 
-// --- NEW HELPER FUNCTION 2 ---
-const getGameOddsInfo = async (teamName) => {
+const getGameResultInfo = async (teamName) => {
   if (!teamName) return null;
 
-  const teamRegex = new RegExp(teamName, "i");
-  const upcomingGame = await Game.findOne({
-    status: "upcoming",
+  const teamRegex = new RegExp(
+    teamName.replace(/game|match/gi, "").trim(),
+    "i"
+  );
+  const finishedGame = await Game.findOne({
+    status: "finished",
     $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
-  }).lean();
-
-  if (upcomingGame) {
-    return `Here are the odds for ${upcomingGame.homeTeam} vs ${
-      upcomingGame.awayTeam
-    }:
-- ${upcomingGame.homeTeam} (Home Win): ${upcomingGame.odds.home.toFixed(2)}
-- Draw: ${upcomingGame.odds.draw.toFixed(2)}
-- ${upcomingGame.awayTeam} (Away Win): ${upcomingGame.odds.away.toFixed(2)}`;
-  }
-
-  return null;
-};
-
-// --- NEW HELPER FUNCTION 3 ---
-const findGamesByLeague = async (leagueName) => {
-  if (!leagueName) return null;
-
-  const leagueRegex = new RegExp(leagueName.replace("league", "").trim(), "i");
-  const games = await Game.find({
-    status: "upcoming",
-    league: leagueRegex,
   })
-    .sort({ matchDate: 1 })
-    .limit(5)
+    .sort({ matchDate: -1 })
     .lean();
 
-  if (games.length > 0) {
-    const gameList = games
-      .map((game) => `- ${game.homeTeam} vs ${game.awayTeam}`)
-      .join("\n");
-    return `Here are some upcoming games in the ${games[0].league}:\n${gameList}`;
+  if (finishedGame) {
+    return `The last match result for ${teamName} was: ${finishedGame.homeTeam} ${finishedGame.scores.home} - ${finishedGame.scores.away} ${finishedGame.awayTeam}.`;
   }
 
-  return `I couldn't find any upcoming games for the "${leagueName}".`;
+  return `I couldn't find a recent result for a team matching "${teamName}".`;
 };
 
 exports.validateNewsQuery = [
@@ -148,7 +108,6 @@ exports.validateAnalyzeGame = [
   body("gameId").isMongoId().withMessage("A valid gameId is required."),
 ];
 
-// Corrected main chat handler function
 exports.handleChat = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
@@ -159,12 +118,13 @@ exports.handleChat = async (req, res, next) => {
       return res.status(400).json({ msg: 'A "message" field is required.' });
     }
     const user = await User.findById(req.user._id).lean();
+    const lowerCaseMessage = message.toLowerCase();
 
-    // First, check for bet confirmation
+    // 1. Handle bet confirmations first (stateful)
     if (context.conversationState === "confirming_bet") {
       if (
-        ["yes", "y", "correct", "ok", "yep"].includes(
-          message.toLowerCase().trim()
+        ["yes", "y", "correct", "ok", "yep", "confirm"].includes(
+          lowerCaseMessage
         )
       ) {
         const betData = context.betSlip;
@@ -180,71 +140,54 @@ exports.handleChat = async (req, res, next) => {
         });
       } else {
         return res.json({
-          reply: "Okay, I've cancelled that bet. Anything else?",
+          reply:
+            "Okay, I've cancelled that bet. Is there anything else I can help with?",
           context: {},
         });
       }
     }
 
-    // Next, check for Live Score requests
-    const scoreKeywords = ["score", "who is winning", "what's the score"];
+    // 2. Intent: Live Scores
     if (
-      scoreKeywords.some((keyword) => message.toLowerCase().includes(keyword))
+      lowerCaseMessage.includes("score") ||
+      lowerCaseMessage.includes("winning")
     ) {
-      const teamMatch = message.match(
-        /(?:in the|for the|on the|of the|on)\s+([A-Za-z\s]+)\s+game/i
-      );
-      const teamName = teamMatch ? teamMatch[1] : message.split(" ").pop();
+      const teamName = message.split(" ").pop();
+      const scoreUpdate = await getLiveScoreUpdate(teamName.replace("?", ""));
+      if (scoreUpdate) return res.json({ reply: scoreUpdate, context: {} });
+    }
 
-      const scoreUpdate = await getLiveScoreUpdate(
-        teamName.replace("game", "").trim()
-      );
-      if (scoreUpdate) {
-        return res.json({ reply: scoreUpdate, context: {} });
+    // 3. Intent: Game Results
+    if (
+      lowerCaseMessage.includes("result") ||
+      lowerCaseMessage.includes("who won")
+    ) {
+      const teamName = message.split(" ").pop();
+      const resultInfo = await getGameResultInfo(teamName.replace("?", ""));
+      if (resultInfo) return res.json({ reply: resultInfo, context: {} });
+    }
+
+    // 4. Intent: General Sports News
+    if (
+      lowerCaseMessage.includes("news") ||
+      lowerCaseMessage.includes("headlines")
+    ) {
+      const newsData = await fetchGeneralSportsNews();
+      if (newsData && newsData.news.length > 0) {
+        const newsReply =
+          "Here are the latest headlines:\n" +
+          newsData.news.map((n) => `- ${n.title}`).join("\n");
+        return res.json({ reply: newsReply, context: {} });
       }
     }
 
-    // Check for Odds requests
-    const oddsKeywords = ["odds", "what are the odds"];
-    if (
-      oddsKeywords.some((keyword) => message.toLowerCase().includes(keyword))
-    ) {
-      const teamMatch =
-        message.match(/(?:for|on)\s+([A-Za-z\s]+)\s+match/i) ||
-        message.match(/(?:for|on)\s+([A-Za-z\s]+)/i);
-      const teamName = teamMatch ? teamMatch[1] : null;
-
-      const oddsInfo = await getGameOddsInfo(teamName);
-      if (oddsInfo) {
-        return res.json({ reply: oddsInfo, context: {} });
-      }
-    }
-
-    // Check for League Game requests
-    const leagueKeywords = ["games in the", "matches in the", "league games"];
-    if (
-      leagueKeywords.some((keyword) => message.toLowerCase().includes(keyword))
-    ) {
-      const leagueMatch = message.match(
-        /(?:in the|in)\s+([A-Za-z\s]+ league)/i
-      );
-      const leagueName = leagueMatch ? leagueMatch[1] : null;
-
-      if (leagueName) {
-        const leagueGamesResponse = await findGamesByLeague(leagueName);
-        return res.json({ reply: leagueGamesResponse, context: {} });
-      }
-    }
-
-    // If it's not any of the above, try to parse the message as a bet intent
+    // 5. Intent: Parse a bet
     const betIntentResult = await exports.parseBetIntent(
       { body: { text: message } },
       res,
       next
     );
-
     if (res.headersSent) return;
-
     if (betIntentResult && betIntentResult.isBetIntent) {
       return res.json({
         reply: betIntentResult.reply,
@@ -252,7 +195,7 @@ exports.handleChat = async (req, res, next) => {
       });
     }
 
-    // If nothing else matches, proceed with general conversation
+    // 6. Fallback: General conversation with user context
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const recentBets = await Bet.find({ user: user._id })
       .sort({ createdAt: -1 })
@@ -263,29 +206,17 @@ exports.handleChat = async (req, res, next) => {
       .sort({ createdAt: -1 })
       .limit(3)
       .lean();
-    const pendingWithdrawal = await Withdrawal.findOne({
-      user: user._id,
-      status: "pending",
-    }).lean();
-    const withdrawalStatus = pendingWithdrawal
-      ? `Yes, $${pendingWithdrawal.amount.toFixed(2)} is pending.`
-      : "No.";
-    const recentResults = await Game.find({ status: "finished" })
-      .sort({ matchDate: -1 })
-      .limit(10)
-      .lean();
 
-    const systemPrompt = `You are "BetWise AI", a friendly and helpful assistant for a sports betting app. The user is "${
+    const systemPrompt = `You are "BetWise AI", a helpful assistant for a sports betting app. The user is "${
       user.username
-    }". Your role is purely conversational. Do not try to parse bets or return JSON. Just chat naturally.
+    }". Your role is conversational. You can answer questions about the user's account, find games, provide sports news, and give game results.
       
-        ### LIVE DATA FOR THIS USER (for context):
+        ### LIVE DATA FOR THIS USER (for context only):
         - Wallet Balance: $${user.walletBalance.toFixed(2)}
         - Recent Bets: ${formatBetsForPrompt(recentBets)}
         - Recent Transactions: ${formatTransactionsForPrompt(
           recentTransactions
         )}
-        - Pending Withdrawal: ${withdrawalStatus}
         
         Now, respond to the user's message: "${message}"`;
 
@@ -302,15 +233,11 @@ exports.handleChat = async (req, res, next) => {
   }
 };
 
-// All other exported functions from aiController.js remain the same...
-// (parseBetIntent, generateGameSummary, analyzeGame, getBettingFeedback, etc.)
-
 exports.parseBetIntent = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const { text } = req.body;
     if (!text) {
-      // Return a specific structure that the caller can check
       return { isBetIntent: false };
     }
 
@@ -374,22 +301,7 @@ exports.parseBetIntent = async (req, res, next) => {
     };
   } catch (error) {
     console.error("AI parseBetIntent error:", error);
-    // In case of an error, it's not a valid bet intent
     return { isBetIntent: false };
-  }
-};
-
-// The rest of your functions (generateGameSummary, analyzeGame, etc.) go here...
-exports.generateGameSummary = async (homeTeam, awayTeam, league) => {
-  try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `You are a sports writer for a betting app called "BetWise". Write a short, exciting, and neutral 1-2 sentence match preview for an upcoming game in the "${league}" between "${homeTeam}" (home) and "${awayTeam}" (away). Do not predict a winner.`;
-    const result = await model.generateContent(prompt);
-    return result.response.text().trim();
-  } catch (error) {
-    console.error("Error generating game summary:", error);
-    return "A highly anticipated match is coming up.";
   }
 };
 
@@ -635,37 +547,10 @@ exports.getNewsSummary = async (req, res, next) => {
   }
 };
 
-let newsCache = { data: null, timestamp: null };
-const CACHE_DURATION_MS = 3600000;
-
 exports.getGeneralSportsNews = async (req, res, next) => {
   try {
-    const now = Date.now();
-    if (newsCache.data && now - newsCache.timestamp < CACHE_DURATION_MS) {
-      return res.status(200).json(newsCache.data);
-    }
-
-    const apiKey = process.env.GOOGLE_API_KEY;
-    const cseId = process.env.GOOGLE_CSE_ID;
-    if (!apiKey || !cseId) {
-      throw new Error("Google Search API Key or CSE ID is not configured.");
-    }
-    const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}&q=top+world+football+news`;
-    const searchResponse = await axios.get(searchUrl);
-    if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
-      return res
-        .status(404)
-        .json({ message: "Could not find any recent sports news." });
-    }
-    const newsItems = searchResponse.data.items.slice(0, 5).map((item) => ({
-      title: item.title,
-      link: item.link,
-      snippet: item.snippet,
-      source: item.displayLink,
-    }));
-    const responseData = { news: newsItems };
-    newsCache = { data: responseData, timestamp: now };
-    res.status(200).json(responseData);
+    const newsData = await fetchGeneralSportsNews();
+    res.status(200).json(newsData);
   } catch (error) {
     next(error);
   }
@@ -673,11 +558,14 @@ exports.getGeneralSportsNews = async (req, res, next) => {
 
 exports.getRecommendedGames = async (req, res, next) => {
   try {
-    const userId = req.user._id;
-    const recommendations = await generateRecommendations(userId);
+    const randomGames = await Game.aggregate([
+      { $match: { status: "upcoming", isDeleted: { $ne: true } } },
+      { $sample: { size: 3 } },
+    ]);
+
     res.status(200).json({
-      message: "Successfully fetched personalized game recommendations.",
-      games: recommendations,
+      message: "Successfully fetched random game suggestions.",
+      games: randomGames,
     });
   } catch (error) {
     console.error("Error in getRecommendedGames:", error);
