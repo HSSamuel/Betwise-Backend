@@ -16,6 +16,8 @@ const {
   setBettingLimits,
   validateSetLimits,
   uploadProfilePicture,
+  getUserStats,
+  getUserStatsHistory,
 } = require("../controllers/userController");
 const { auth } = require("../middleware/authMiddleware");
 const {
@@ -93,5 +95,16 @@ router.post(
   upload.single("profilePicture"), // "profilePicture" must match the form field name
   uploadProfilePicture
 );
+
+// --- Implementation: Add the new route for user stats ---
+// @route   GET /users/stats
+// @desc    Get detailed betting statistics for the logged-in user
+// @access  Private (Authenticated User)
+router.get("/stats", auth, getUserStats);
+
+// @route   GET /users/stats/history
+// @desc    Get aggregated historical stats for charts
+// @access  Private (Authenticated User)
+router.get("/stats/history", auth, getUserStatsHistory);
 
 module.exports = router;

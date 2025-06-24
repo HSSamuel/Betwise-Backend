@@ -74,6 +74,12 @@ app.use(`${apiVersion}/admin`, require("./routes/adminRoutes"));
 app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
 app.use(`${apiVersion}/aviator`, aviatorRoutes);
+app.use(`${apiVersion}/promotions`, require("./routes/promoRoutes"));
+app.use(`${apiVersion}/aviator`, aviatorRoutes);
+app.use(`${apiVersion}/promotions`, require("./routes/promoRoutes"));
+app.use(`${apiVersion}/admin/rankings`, require("./routes/rankingRoutes"));
+// --- Leaderboard routes ---
+app.use(`${apiVersion}/leaderboards`, require("./routes/leaderboardRoutes"));
 
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;

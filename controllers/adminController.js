@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const { syncGames } = require("../services/sportsDataService");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/env"); // <-- IMPORT the new config
+const Notification = require("../models/Notification");
 
 // Initialize Gemini AI
 if (!config.GEMINI_API_KEY) {
@@ -268,6 +269,69 @@ exports.getAllUsersFullDetails = async (req, res, next) => {
   }
 };
 
+// --- Corrected adminGetUserDetail Function ---
+exports.adminGetUserDetail = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const {
+      txType,
+      betStatus,
+      sortBy = "createdAt",
+      order = "desc",
+      startDate,
+      endDate,
+    } = req.query;
+
+    const userId = new mongoose.Types.ObjectId(id);
+    const user = await User.findById(userId).select("-password").lean();
+
+    if (!user) {
+      const err = new Error("User not found.");
+      err.statusCode = 404;
+      return next(err);
+    }
+
+    // --- Correction: Build dynamic filters and sort options ---
+    const transactionFilter = { user: userId };
+    if (txType) transactionFilter.type = txType;
+    if (startDate && endDate)
+      transactionFilter.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+
+    const betFilter = { user: userId };
+    if (betStatus) betFilter.status = betStatus;
+    if (startDate && endDate)
+      betFilter.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+
+    const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
+
+    const [transactions, bets] = await Promise.all([
+      Transaction.find(transactionFilter)
+        .sort(sortOptions)
+        .limit(100)
+        .lean(),
+      Bet.find(betFilter)
+        .sort(sortOptions)
+        .limit(100)
+        .populate("selections.game", "homeTeam awayTeam")
+        .lean(),
+    ]);
+
+    res.status(200).json({
+      user,
+      transactions,
+      bets,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 exports.adminGetUserProfile = async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
@@ -347,6 +411,30 @@ exports.adminDeleteUser = async (req, res, next) => {
   }
 };
 
+// --- Corrected adminDeleteGame Function ---
+exports.adminDeleteGame = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const game = await Game.findById(id);
+
+    if (!game) {
+      const err = new Error("Game not found.");
+      err.statusCode = 404;
+      return next(err);
+    }
+
+    game.isDeleted = true;
+    game.status = "cancelled";
+    await game.save();
+
+    res.status(200).json({
+      msg: `Game ${game.homeTeam} vs ${game.awayTeam} has been marked as deleted.`,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.adminGetWithdrawals = async (req, res, next) => {
   try {
     const { status = "pending" } = req.query;
@@ -360,6 +448,7 @@ exports.adminGetWithdrawals = async (req, res, next) => {
   }
 };
 
+// --- Corrected adminProcessWithdrawal Function ---
 exports.adminProcessWithdrawal = async (req, res, next) => {
   const { status, adminNotes } = req.body;
   const { id } = req.params;
@@ -380,23 +469,46 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
     withdrawalRequest.processedAt = new Date();
 
     if (status === "approved") {
-      const user = withdrawalRequest.user;
-      if (user.walletBalance < withdrawalRequest.amount)
-        throw new Error(
-          "User no longer has sufficient funds for this withdrawal."
-        );
-      user.walletBalance -= withdrawalRequest.amount;
-      await new Transaction({
-        user: user._id,
-        type: "withdrawal",
-        amount: -withdrawalRequest.amount,
-        balanceAfter: user.walletBalance,
-        description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
-      }).save({ session });
-      await user.save({ session });
+        const user = withdrawalRequest.user;
+        if (user.walletBalance < withdrawalRequest.amount) throw new Error("User no longer has sufficient funds for this withdrawal.");
+        user.walletBalance -= withdrawalRequest.amount;
+        await new Transaction({
+            user: user._id, type: "withdrawal", amount: -withdrawalRequest.amount, balanceAfter: user.walletBalance, description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
+        }).save({ session });
+        await user.save({ session });
     }
     await withdrawalRequest.save({ session });
     await session.commitTransaction();
+    
+    // --- Correction: Define variables and use them for both notification types ---
+    const notificationType = `withdrawal_${withdrawalRequest.status}`;
+    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(2)} has been ${withdrawalRequest.status}.`;
+
+    try {
+      await sendEmail({
+        to: withdrawalRequest.user.email,
+        subject: `Withdrawal Request ${withdrawalRequest.status}`,
+        html: `<p>Hi ${withdrawalRequest.user.firstName},</p><p>${notificationMessage}</p>`,
+      });
+    } catch (emailError) {
+      console.error(
+        `Failed to send withdrawal email to ${withdrawalRequest.user.email}:`,
+        emailError
+      );
+    }
+    
+    await new Notification({
+      user: withdrawalRequest.user._id,
+      message: notificationMessage,
+      type: notificationType,
+      link: "/wallet",
+    }).save(); // Can be saved outside the session
+
+    req.io.to(withdrawalRequest.user._id.toString()).emit("withdrawal_processed", {
+        status: withdrawalRequest.status,
+        message: notificationMessage,
+    });
+
     res.status(200).json({
       msg: `Withdrawal request has been ${status}.`,
       withdrawalRequest,

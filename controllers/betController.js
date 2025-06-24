@@ -5,6 +5,10 @@ const Game = require("../models/Game");
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const bettingService = require("../services/bettingService");
+const SharedSlip = require("../models/SharedSlip");
+const crypto = require("crypto");
+const { sendEmail } = require("../services/emailService");
+const config = require("../config/env");
 
 // --- Validation Rules ---
 exports.validatePlaceBet = [
@@ -39,6 +43,12 @@ exports.validateGetUserBets = [
   query("gameId").optional().isMongoId(),
   query("page").optional().isInt({ min: 1 }).toInt(),
   query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
+  query("sortBy")
+    .optional()
+    .isIn(["stake", "payout", "createdAt", "totalOdds"]),
+  query("order").optional().isIn(["asc", "desc"]),
+  query("startDate").optional().isISO8601().toDate(),
+  query("endDate").optional().isISO8601().toDate(),
 ];
 
 exports.validateGetBetById = [
@@ -73,6 +83,29 @@ exports.validatePlaceMultiBet = [
   }),
 ];
 
+exports.validateCashOut = [
+  param("betId").isMongoId().withMessage("A valid bet ID is required."),
+  body("amount")
+    .optional()
+    .isFloat({ gt: 0 })
+    .withMessage("Cash out amount must be a positive number."),
+];
+
+exports.validateShareSlip = [
+  body("selections")
+    .isArray({ min: 1 })
+    .withMessage("At least one selection is required to share."),
+  body("betType")
+    .isIn(["single", "multi"])
+    .withMessage("A valid bet type is required."),
+  body("selections.*.gameId")
+    .isMongoId()
+    .withMessage("Invalid game ID in selections."),
+  body("selections.*.outcome")
+    .isIn(["A", "B", "Draw"])
+    .withMessage("Invalid outcome in selections."),
+];
+
 // --- Controller Functions ---
 
 exports.placeBet = async (req, res, next) => {
@@ -91,6 +124,27 @@ exports.placeBet = async (req, res, next) => {
       outcome,
       stake
     );
+
+    const HIGH_STAKE_THRESHOLD = 100;
+    if (stake >= HIGH_STAKE_THRESHOLD) {
+      try {
+        await sendEmail({
+          to: req.user.email,
+          subject: "High-Stakes Bet Confirmation",
+          html: `<p>Hi ${
+            req.user.firstName
+          },</p><p>This is a confirmation that you have placed a bet of $${stake.toFixed(
+            2
+          )}. If you did not authorize this, please contact support immediately.</p>`,
+        });
+      } catch (emailError) {
+        console.error(
+          `Failed to send high-stakes bet email to ${req.user.email}:`,
+          emailError
+        );
+      }
+    }
+
     res.status(201).json({
       msg: "Bet placed successfully!",
       bet: result.bet,
@@ -177,6 +231,27 @@ exports.placeMultiBet = async (req, res, next) => {
     }).save({ session });
 
     await session.commitTransaction();
+
+    const HIGH_STAKE_THRESHOLD = 100;
+    if (stake >= HIGH_STAKE_THRESHOLD) {
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: "High-Stakes Bet Confirmation",
+          html: `<p>Hi ${
+            user.firstName
+          },</p><p>This is a confirmation that you have placed a multi-bet of $${stake.toFixed(
+            2
+          )}. If you did not authorize this, please contact support immediately.</p>`,
+        });
+      } catch (emailError) {
+        console.error(
+          `Failed to send high-stakes multi-bet email to ${user.email}:`,
+          emailError
+        );
+      }
+    }
+
     res.status(201).json({
       msg: "Multi-bet placed successfully!",
       bet: multiBet,
@@ -274,32 +349,38 @@ exports.placeMultipleSingles = async (req, res, next) => {
 
 exports.getUserBets = async (req, res, next) => {
   try {
-    const { status, gameId, page = 1, limit = 10 } = req.query;
+    const {
+      status,
+      gameId,
+      page = 1,
+      limit = 10,
+      sortBy = "createdAt",
+      order = "desc",
+      startDate,
+      endDate,
+    } = req.query;
 
     const filter = { user: req.user._id };
     if (status) filter.status = status;
+    // --- Correction: Consistently use selections.game for filtering ---
     if (gameId) filter["selections.game"] = gameId;
+    if (startDate && endDate) {
+      filter.createdAt = { $gte: startDate, $lte: endDate };
+    }
 
+    const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
     const skip = (page - 1) * limit;
 
-    // FIX: This query now populates BOTH the new `selections.game` path AND the
-    // legacy `game` path. This ensures all bets, new and old, have their game data.
     const bets = await Bet.find(filter)
-      .sort({ createdAt: -1 })
+      .sort(sortOptions)
       .skip(skip)
       .limit(limit)
       .populate({
         path: "selections.game",
         select: "homeTeam awayTeam league matchDate result",
       })
-      .populate({
-        path: "game", // Populate the legacy field
-        select: "homeTeam awayTeam league matchDate result",
-      })
       .lean();
 
-    // This block normalizes the data so the frontend doesn't have to handle two different structures.
-    // It creates a `selections` array for legacy bets.
     const normalizedBets = bets.map((bet) => {
       if ((!bet.selections || bet.selections.length === 0) && bet.game) {
         return {
@@ -319,7 +400,7 @@ exports.getUserBets = async (req, res, next) => {
     const totalBets = await Bet.countDocuments(filter);
 
     res.status(200).json({
-      bets: normalizedBets,
+      bets: bets, // Send the directly fetched bets
       currentPage: parseInt(page),
       totalPages: Math.ceil(totalBets / limit),
       totalCount: totalBets,
@@ -372,6 +453,163 @@ exports.getBetById = async (req, res, next) => {
     }
 
     res.status(200).json(bet);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- Correction: Added 'exports.' to the cashOutBet function ---
+exports.cashOutBet = async (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { betId } = req.params;
+    const { amount: partialCashOutAmount } = req.body;
+    const userId = req.user._id;
+
+    const bet = await Bet.findOne({ _id: betId, user: userId }).session(
+      session
+    );
+    if (!bet || bet.status !== "pending") {
+      throw new Error("This bet is not available for cash out.");
+    }
+
+    const game = await Game.findById(bet.selections[0].game).session(session);
+    if (!game || game.status !== "live") {
+      throw new Error("Cash out is only available for live games.");
+    }
+
+    const originalOdds = bet.selections[0].odds;
+    const currentOutcomeOdds =
+      game.odds[bet.selections[0].outcome.toLowerCase()];
+    const fullCashOutValue = parseFloat(
+      ((bet.stake * originalOdds) / currentOutcomeOdds).toFixed(2)
+    );
+
+    if (fullCashOutValue <= 0) {
+      throw new Error("Cash out value is not high enough at this time.");
+    }
+
+    const user = await User.findById(userId).session(session);
+
+    if (partialCashOutAmount) {
+      if (partialCashOutAmount >= fullCashOutValue) {
+        throw new Error(
+          "Partial cash out amount must be less than the full cash out value."
+        );
+      }
+      const cashOutPortion = partialCashOutAmount / fullCashOutValue;
+      const remainingPortion = 1 - cashOutPortion;
+      const cashedOutStake = bet.stake * cashOutPortion;
+      user.walletBalance += partialCashOutAmount;
+
+      await new Transaction({
+        user: user._id,
+        type: "win",
+        amount: partialCashOutAmount,
+        balanceAfter: user.walletBalance,
+        bet: bet._id,
+        game: game._id,
+        description: `Partial cash out for bet`,
+      }).save({ session });
+
+      bet.stake *= remainingPortion;
+      bet.payout = bet.stake * originalOdds;
+
+      await user.save({ session });
+      await bet.save({ session });
+
+      res
+        .status(200)
+        .json({
+          msg: `Successfully cashed out.`,
+          walletBalance: user.walletBalance,
+        });
+    } else {
+      user.walletBalance += fullCashOutValue;
+      bet.status = "won";
+      bet.payout = fullCashOutValue;
+
+      await new Transaction({
+        user: user._id,
+        type: "win",
+        amount: fullCashOutValue,
+        balanceAfter: user.walletBalance,
+        bet: bet._id,
+        game: game._id,
+        description: `Cashed out bet`,
+      }).save({ session });
+
+      await user.save({ session });
+      await bet.save({ session });
+
+      res
+        .status(200)
+        .json({
+          msg: "Bet cashed out successfully!",
+          payout: fullCashOutValue,
+          walletBalance: user.walletBalance,
+        });
+    }
+
+    await session.commitTransaction();
+  } catch (error) {
+    await session.abortTransaction();
+    next(error);
+  } finally {
+    session.endSession();
+  }
+};
+
+// --- Correction: Added 'exports.' to the createSharedSlip function ---
+exports.createSharedSlip = async (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  try {
+    const { selections, betType } = req.body;
+    const userId = req.user._id;
+    const shareId = crypto.randomBytes(4).toString("hex");
+    const sharedSlip = new SharedSlip({
+      shareId,
+      user: userId,
+      selections,
+      betType,
+    });
+    await sharedSlip.save();
+    const shareUrl = `${config.FRONTEND_URL}/slip/${shareId}`;
+    res.status(201).json({ msg: "Shareable link created!", shareUrl, shareId });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- Correction: Added 'exports.' to the getSharedSlip function ---
+exports.getSharedSlip = async (req, res, next) => {
+  try {
+    const { shareId } = req.params;
+    const slip = await SharedSlip.findOne({ shareId }).populate({
+      path: "selections.game",
+      model: "Game",
+      select: "homeTeam awayTeam odds",
+    });
+
+    if (!slip) {
+      const err = new Error("This share link is invalid or has expired.");
+      err.statusCode = 404;
+      return next(err);
+    }
+
+    res
+      .status(200)
+      .json({ message: "Slip details fetched successfully.", slip });
   } catch (error) {
     next(error);
   }

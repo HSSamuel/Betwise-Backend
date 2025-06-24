@@ -10,6 +10,7 @@ const {
   validatePlaceBet,
   placeBet,
   cashOut,
+  getGameState,
 } = require("../controllers/aviatorController");
 
 // @route   POST /api/v1/aviator/place-bet
@@ -27,5 +28,10 @@ router.post(
 // @desc    Cash out the user's current running bet
 // @access  Private
 router.post("/cash-out", auth, cashOut);
+
+// @route   GET /api/v1/aviator/state
+// @desc    Get the current state of the Aviator game
+// @access  Public
+router.get("/state", getGameState);
 
 module.exports = router;

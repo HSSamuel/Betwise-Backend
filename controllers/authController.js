@@ -111,6 +111,31 @@ exports.register = async (req, res, next) => {
       state: state ? state.trim() : undefined,
     });
     await user.save();
+
+    // --- Implementation: Send a welcome email after saving the user ---
+    const welcomeSubject = `Welcome to ${config.APP_NAME}!`;
+    const welcomeMessage = `
+        <h2>Hi ${user.firstName},</h2>
+        <p>Welcome to BetWise! We're thrilled to have you on board.</p>
+        <p>Your account has been created successfully. You can now explore upcoming games, get AI-powered insights, and place your bets.</p>
+        <p>Remember to always bet responsibly.</p>
+        <p>Best regards,<br>The BetWise Team</p>
+    `;
+
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: welcomeSubject,
+        html: welcomeMessage,
+      });
+    } catch (emailError) {
+      // Log the email error but don't block the user's registration
+      console.error(
+        `Failed to send welcome email to ${user.email}:`,
+        emailError
+      );
+    }
+
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
     res.status(201).json({

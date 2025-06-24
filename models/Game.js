@@ -104,8 +104,14 @@ const gameSchema = new mongoose.Schema(
     },
     externalApiId: {
       type: String,
-      unique: true, // This automatically creates the index we need
+      unique: true,
       sparse: true,
+    },
+    // --- Implementation: Add the soft delete flag ---
+    isDeleted: {
+      type: Boolean,
+      default: false,
+      index: true, // Index for faster queries
     },
   },
   { timestamps: true }

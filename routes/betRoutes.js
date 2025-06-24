@@ -5,11 +5,10 @@ const {
   handleValidationErrors,
 } = require("../middleware/validationMiddleware");
 
-// Import all the specific validators and controllers
 const {
   validatePlaceBet,
-  validatePlaceMultiBet,
   placeBet,
+  validatePlaceMultiBet,
   placeMultiBet,
   validateGetUserBets,
   getUserBets,
@@ -17,10 +16,13 @@ const {
   getBetById,
   validatePlaceMultipleSingles,
   placeMultipleSingles,
+  validateCashOut,
+  cashOutBet,
+  validateShareSlip,
+  createSharedSlip,
+  getSharedSlip,
 } = require("../controllers/betController");
 
-// @desc    Place a single bet
-// @access  Private
 router.post(
   "/single",
   auth,
@@ -28,9 +30,6 @@ router.post(
   handleValidationErrors,
   placeBet
 );
-
-// @desc    Place multiple single bets at once
-// @access  Private
 router.post(
   "/singles",
   auth,
@@ -38,9 +37,6 @@ router.post(
   handleValidationErrors,
   placeMultipleSingles
 );
-
-// @desc    Place a multi-bet (accumulator)
-// @access  Private
 router.post(
   "/multi",
   auth,
@@ -48,13 +44,7 @@ router.post(
   handleValidationErrors,
   placeMultiBet
 );
-
-// @desc    Get user's bets
-// @access  Private
 router.get("/", auth, validateGetUserBets, handleValidationErrors, getUserBets);
-
-// @desc    Get a single bet by its ID
-// @access  Private
 router.get(
   "/:id",
   auth,
@@ -62,5 +52,20 @@ router.get(
   handleValidationErrors,
   getBetById
 );
+router.post(
+  "/:betId/cash-out",
+  auth,
+  validateCashOut,
+  handleValidationErrors,
+  cashOutBet
+);
+router.post(
+  "/share",
+  auth,
+  validateShareSlip,
+  handleValidationErrors,
+  createSharedSlip
+);
+router.get("/share/:shareId", getSharedSlip);
 
 module.exports = router;

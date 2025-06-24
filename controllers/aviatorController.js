@@ -12,6 +12,11 @@ exports.validatePlaceBet = [
     .isFloat({ gt: 0 })
     .withMessage("A positive stake amount is required.")
     .toFloat(),
+  body("autoCashOutAt")
+    .optional()
+    .isFloat({ gt: 1.0 })
+    .withMessage("Auto cash-out multiplier must be greater than 1.0.")
+    .toFloat(),
 ];
 
 // --- Controller Functions ---
@@ -23,22 +28,21 @@ exports.placeBet = async (req, res, next) => {
   }
 
   const aviatorService = req.aviatorService;
-  const { stake } = req.body;
+  const { stake, autoCashOutAt } = req.body;
   const userId = req.user._id;
 
   // Check game state from the service
   if (aviatorService.gameState !== "betting") {
     const err = new Error(
-      "Bets can only be placed during the 'betting' phase."
+      "The betting window is closed. Please wait for the next round."
     );
     err.statusCode = 400;
     return next(err);
   }
 
-  // --- FIX: Add a guard clause to ensure a game round exists ---
   if (!aviatorService.currentGame) {
     const err = new Error(
-      "Cannot place bet. The game round has not started yet."
+      "Game round not ready. Please wait a moment and try again."
     );
     err.statusCode = 400;
     return next(err);
@@ -61,7 +65,9 @@ exports.placeBet = async (req, res, next) => {
       game: aviatorService.currentGame._id,
     }).session(session);
     if (existingBet) {
-      throw new Error("You have already placed a bet on this round.");
+      const err = new Error("You have already placed a bet on this round.");
+      err.statusCode = 400;
+      throw err;
     }
 
     // Deduct stake and create records
@@ -71,6 +77,7 @@ exports.placeBet = async (req, res, next) => {
       user: userId,
       game: aviatorService.currentGame._id,
       stake: stake,
+      autoCashOutAt: autoCashOutAt || null,
     });
 
     const transaction = new Transaction({
@@ -177,4 +184,13 @@ exports.cashOut = async (req, res, next) => {
   } finally {
     session.endSession();
   }
+};
+
+exports.getGameState = (req, res, next) => {
+  const aviatorService = req.aviatorService;
+  res.status(200).json({
+    state: aviatorService.gameState,
+    multiplier: aviatorService.multiplier,
+    publicHash: aviatorService.currentGame?.publicHash || null,
+  });
 };

@@ -1,21 +1,22 @@
-// In: Bet/Backend/services/aviatorService.js
-
 const crypto = require("crypto");
 const AviatorGame = require("../models/AviatorGame");
+const AviatorBet = require("../models/AviatorBet");
+const User = require("../models/User");
+const Transaction = require("../models/Transaction");
+const mongoose = require("mongoose");
 
-// --- Game State and Constants ---
 const GAME_STATE = {
-  WAITING: "waiting", // Waiting for the previous round to finish
-  BETTING: "betting", // Players can place bets (e.g., 5 seconds)
-  RUNNING: "running", // Plane is flying, multiplier is increasing
-  CRASHED: "crashed", // Plane has flown away, round is over
+  WAITING: "waiting",
+  BETTING: "betting",
+  RUNNING: "running",
+  CRASHED: "crashed",
 };
-const BETTING_DURATION = 5000; // 5 seconds
-const WAITING_DURATION = 3000; // 3 seconds between rounds
+const BETTING_DURATION = 5000;
+const WAITING_DURATION = 3000;
 
 class AviatorService {
   constructor(io) {
-    this.io = io; // Socket.IO server instance
+    this.io = io;
     this.gameState = GAME_STATE.WAITING;
     this.currentGame = null;
     this.multiplier = 1.0;
@@ -25,7 +26,6 @@ class AviatorService {
     console.log("✈️  Aviator Service Initialized.");
   }
 
-  // --- Core Game Loop ---
   start() {
     console.log("✈️  Starting Aviator Game Loop...");
     this.runGameCycle();
@@ -33,12 +33,10 @@ class AviatorService {
 
   async runGameCycle() {
     try {
-      // 1. WAITING state
       this.gameState = GAME_STATE.WAITING;
       this.io.emit("aviator:state", { state: this.gameState });
       await new Promise((resolve) => setTimeout(resolve, WAITING_DURATION));
 
-      // 2. BETTING state
       this.gameState = GAME_STATE.BETTING;
       const newGame = await this.createNewGame();
       this.currentGame = newGame;
@@ -48,33 +46,72 @@ class AviatorService {
       });
       await new Promise((resolve) => setTimeout(resolve, BETTING_DURATION));
 
-      // 3. RUNNING state
       this.gameState = GAME_STATE.RUNNING;
       this.roundStartTime = Date.now();
       this.io.emit("aviator:state", { state: this.gameState });
 
-      const tick = () => {
+      const tick = async () => {
         if (this.gameState !== GAME_STATE.RUNNING) return;
-
         const elapsedTime = (Date.now() - this.roundStartTime) / 1000;
         this.multiplier = parseFloat(Math.pow(1.05, elapsedTime).toFixed(2));
+
+        await this.checkForAutoCashOuts(this.multiplier);
 
         if (this.multiplier >= this.crashPoint) {
           this.crash();
         } else {
           this.io.emit("aviator:tick", { multiplier: this.multiplier });
-          setTimeout(tick, 50); // Broadcast multiplier update ~20 times/sec
+          setTimeout(tick, 50);
         }
       };
       tick();
     } catch (error) {
       console.error("Error in game cycle:", error);
-      // In case of error, reset the cycle after a delay
       setTimeout(() => this.runGameCycle(), 5000);
     }
   }
 
-  // --- Game State Management ---
+  async checkForAutoCashOuts(currentMultiplier) {
+    const betsToCashOut = await AviatorBet.find({
+      game: this.currentGame._id,
+      status: "pending",
+      autoCashOutAt: { $lte: currentMultiplier, $ne: null },
+    });
+
+    for (const bet of betsToCashOut) {
+      // Use a separate session for each auto cash-out to prevent one failure from blocking others
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        const user = await User.findById(bet.user).session(session);
+        if (!user) continue;
+
+        const payout = bet.stake * bet.autoCashOutAt;
+        bet.status = "won";
+        bet.payout = parseFloat(payout.toFixed(2));
+        bet.cashOutAt = bet.autoCashOutAt;
+        user.walletBalance += bet.payout;
+
+        await new Transaction({
+          /* ... */
+        }).save({ session });
+        await user.save({ session });
+        await bet.save({ session });
+
+        await session.commitTransaction();
+
+        this.io.to(user._id.toString()).emit("aviator:cashed_out", {
+          /* ... */
+        });
+      } catch (error) {
+        await session.abortTransaction();
+        console.error(`Failed to auto cash out bet ${bet._id}:`, error);
+      } finally {
+        session.endSession();
+      }
+    }
+  }
+
   async crash() {
     this.gameState = GAME_STATE.CRASHED;
     this.currentGame.status = "crashed";
@@ -91,31 +128,55 @@ class AviatorService {
       },
     });
 
-    // TODO: Add logic here to resolve all pending bets for this round
+    // --- Implementation: Resolve pending bets ---
+    await this.resolveBetsForRound(this.currentGame);
 
-    // Start the next game cycle
     this.runGameCycle();
   }
 
-  // --- Provably Fair Logic ---
+  // --- Implementation: New method to resolve all bets for a round ---
+  async resolveBetsForRound(game) {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      const pendingBets = await AviatorBet.find({
+        game: game._id,
+        status: "pending",
+      }).session(session);
+
+      for (const bet of pendingBets) {
+        // Bets that were not cashed out are considered lost.
+        bet.status = "lost";
+        await bet.save({ session });
+      }
+
+      console.log(
+        `Resolved ${pendingBets.length} pending (lost) bets for Aviator round ${game._id}.`
+      );
+
+      await session.commitTransaction();
+    } catch (error) {
+      await session.abortTransaction();
+      console.error(
+        `Error resolving Aviator bets for round ${game._id}:`,
+        error
+      );
+    } finally {
+      session.endSession();
+    }
+  }
+
   async createNewGame() {
     const serverSeed = crypto.randomBytes(32).toString("hex");
     const salt = crypto.randomBytes(16).toString("hex");
-
-    // The public hash shown to players before the round starts (a commitment to the server seed)
     const publicHash = crypto
       .createHash("sha256")
       .update(serverSeed)
       .digest("hex");
-
-    // The actual hash that determines the outcome, created using HMAC for security.
-    // This cannot be predicted by the player, but can be verified later.
     const gameHash = crypto
       .createHmac("sha256", serverSeed)
       .update(salt)
       .digest("hex");
-
-    // The determined crash point for this round, calculated from the secure gameHash
     this.crashPoint = this.getCrashPoint(gameHash);
     this.multiplier = 1.0;
 
@@ -124,7 +185,7 @@ class AviatorService {
       salt,
       publicHash,
       crashMultiplier: this.crashPoint,
-      status: "running", // Set initial status
+      status: "running",
     });
 
     await game.save();
@@ -132,11 +193,7 @@ class AviatorService {
   }
 
   getCrashPoint(gameHash) {
-    // This is a more standard and robust provably fair algorithm.
-
-    // 1. Introduce a house edge. For example, a 3% chance of an instant 1.00x crash.
-    // This creates more realistic game variance.
-    const instantCrashChance = 3; // 3%
+    const instantCrashChance = 3;
     const isInstantCrash =
       parseInt(gameHash.slice(0, 2), 16) % (100 / instantCrashChance) === 0;
 
@@ -144,11 +201,8 @@ class AviatorService {
       return 1.0;
     }
 
-    // 2. Use the standard formula for calculating the crash point.
-    // We use a 52-bit integer from the hash for a wide range of outcomes.
     const h = parseInt(gameHash.slice(0, 13), 16);
     const e = Math.pow(2, 52);
-
     const crashPoint = Math.floor((100 * e - h) / (e - h)) / 100;
 
     return Math.max(1, crashPoint);

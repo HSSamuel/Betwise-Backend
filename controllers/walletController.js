@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
+const { sendEmail } = require("../services/emailService");
 const {
   createPaymentLink,
   verifyWebhookSignature,
@@ -77,12 +78,10 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
 
   const payload = req.body;
 
-  // The only check we need is if the payment status is "successful".
   if (payload.status === "successful") {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
-      // Use payload.txRef from the webhook data, which matches payload.data.tx_ref
       const tx_ref = payload.txRef || payload.data.tx_ref;
       const userId = tx_ref ? tx_ref.split("-")[2] : null;
 
@@ -106,12 +105,40 @@ exports.handleFlutterwaveWebhook = async (req, res, next) => {
             payload.flwRef || payload.data.flw_ref
           }`,
         }).save({ session });
+      } else {
+        // If user is not found, we should not proceed.
+        throw new Error(
+          `User with ID ${userId} not found for webhook processing.`
+        );
       }
+
       await session.commitTransaction();
+
+      // --- Implementation: Send email AFTER the transaction is successfully committed ---
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: "Deposit Successful",
+          html: `<p>Hi ${
+            user.firstName
+          },</p><p>Your deposit of $${amount.toFixed(
+            2
+          )} was successful. Your new wallet balance is $${user.walletBalance.toFixed(
+            2
+          )}.</p>`,
+        });
+      } catch (emailError) {
+        // Log the email error but don't fail the entire request, as the payment was successful.
+        console.error(
+          `Failed to send deposit email to ${user.email}:`,
+          emailError
+        );
+      }
     } catch (error) {
       await session.abortTransaction();
       console.error("Webhook processing error:", error);
-      return res.status(500).send("Error processing webhook.");
+      // We send a 200 OK so Flutterwave doesn't retry, but log the error internally.
+      return res.status(200).send("Error processing webhook internally.");
     } finally {
       session.endSession();
     }

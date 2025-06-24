@@ -3,11 +3,8 @@ const mongoose = require("mongoose");
 const Game = require("../models/Game");
 const { generateOddsForGame } = require("./oddsService");
 const config = require("../config/env");
-
-// Import the bet resolution service, which is needed for finished games.
 const { resolveBetsForGame } = require("./betResolutionService");
 
-// --- NEW FUNCTION: To sync live and finished games ---
 const syncLiveAndFinishedGames = async (io) => {
   console.log("... Checking for live and finished games from API-Football...");
   const leagueIds = [
@@ -25,16 +22,25 @@ const syncLiveAndFinishedGames = async (io) => {
       `https://v3.football.api-sports.io/fixtures`,
       {
         params: {
-          live: "all", // This parameter gets all live and recently finished games
+          live: "all",
         },
         headers: { "x-apisports-key": config.APIFOOTBALL_KEY },
       }
     );
 
-    if (!response.data.response || response.data.response.length === 0) {
-      console.log("... No live or recently finished games found.");
+    const fixtures = response.data.response;
+    if (!fixtures || fixtures.length === 0) {
+      console.log("... No live or recently finished games found from API.");
       return;
     }
+
+    // --- Start of Implementation ---
+    console.log(
+      `[Sync] Fetched ${fixtures.length} live/finished fixtures from API.`
+    );
+    let updatedCount = 0;
+    let settledCount = 0;
+    // --- End of Implementation ---
 
     for (const fixture of response.data.response) {
       const game = await Game.findOne({
@@ -44,7 +50,6 @@ const syncLiveAndFinishedGames = async (io) => {
 
       const newStatus = fixture.fixture.status.short;
 
-      // If the game is FINISHED ('FT') and was previously not finished
       if (newStatus === "FT" && game.status !== "finished") {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -61,6 +66,7 @@ const syncLiveAndFinishedGames = async (io) => {
           await resolveBetsForGame(game, session);
           await session.commitTransaction();
 
+          settledCount++; // Enhanced Log for settled games
           console.log(
             `✅ Game Finished & Settled: ${game.homeTeam} vs ${game.awayTeam}`
           );
@@ -75,9 +81,7 @@ const syncLiveAndFinishedGames = async (io) => {
         } finally {
           session.endSession();
         }
-      }
-      // If the game is LIVE and the score has changed
-      else if (
+      } else if (
         newStatus.startsWith("1H") ||
         newStatus.startsWith("2H") ||
         newStatus === "HT"
@@ -91,6 +95,7 @@ const syncLiveAndFinishedGames = async (io) => {
           game.scores.away = fixture.goals.away;
           game.elapsedTime = fixture.fixture.status.elapsed;
           await game.save();
+          updatedCount++; // Enhanced Log for updated games
           console.log(
             `⚽ Score Update: ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${game.awayTeam}`
           );
@@ -98,10 +103,18 @@ const syncLiveAndFinishedGames = async (io) => {
         }
       }
     }
+
+    // --- Start of Implementation ---
+    console.log(
+      `[Sync] Summary: ${updatedCount} games updated, ${settledCount} games settled.`
+    );
+    // --- End of Implementation ---
   } catch (error) {
     console.error("Error fetching live/finished games:", error.message);
   }
 };
+
+// --- (The rest of the file remains the same) ---
 
 // --- NEW: Provider for AllSportsApi ---
 const allSportsApiProvider = {
@@ -189,15 +202,15 @@ const theSportsDbProvider = {
   // ... (code for this provider remains the same, including the delay)
 };
 
+
 // --- Main Service ---
 const providers = {
   apifootball: apiFootballProvider,
   thesportsdb: theSportsDbProvider,
-  allsportsapi: allSportsApiProvider, // Add the new provider to the list
+  allsportsapi: allSportsApiProvider,
 };
 
 const syncGames = async (source = "allsportsapi") => {
-  // Default to the new provider
   const provider = providers[source.toLowerCase()];
   if (provider && provider.enabled) {
     await provider.syncUpcomingGames();

@@ -63,12 +63,10 @@ exports.createRanking = async (req, res, next) => {
 
     const newRanking = new TeamRanking({ teamName, teamName_lower, ranking });
     await newRanking.save();
-    res
-      .status(201)
-      .json({
-        message: "Team ranking created successfully.",
-        ranking: newRanking,
-      });
+    res.status(201).json({
+      message: "Team ranking created successfully.",
+      ranking: newRanking,
+    });
   } catch (error) {
     next(error);
   }

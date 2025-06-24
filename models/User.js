@@ -118,6 +118,10 @@ userSchema.virtual("fullName").get(function () {
   return `${this.firstName} ${this.lastName}`;
 });
 
+userSchema.virtual("hasPassword").get(function () {
+  return !!this.password;
+});
+
 userSchema.set("toJSON", { virtuals: true });
 userSchema.set("toObject", { virtuals: true });
 

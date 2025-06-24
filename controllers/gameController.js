@@ -162,6 +162,7 @@ const validateAdjustOdds = [
 const getGames = async (req, res, next) => {
   const { league, status, date, page = 1, limit = 10 } = req.query;
   const filter = {};
+  filter.isDeleted = { $ne: true };
   if (league) filter.league = { $regex: new RegExp(league, "i") };
 
   // FIX: Only add the 'status' property to the filter if it exists in the query.

@@ -1,21 +1,30 @@
-// In: services/betResolutionService.js
-
 const mongoose = require("mongoose");
 const Bet = require("../models/Bet");
 const User = require("../models/User");
 const Game = require("../models/Game");
 const Transaction = require("../models/Transaction");
+const Notification = require("../models/Notification"); // Ensure Notification model is imported
 
 /**
- * Resolves all pending bets (both single and multi) for a given game that has finished.
- * This function should be called within a database session.
+ * A simple helper function for currency formatting on the backend.
+ * @param {number} amount - The numerical amount.
+ * @returns {string} A formatted currency string.
+ */
+function formatCurrency(amount) {
+  if (typeof amount !== "number") return "$0.00";
+  return "$" + amount.toFixed(2);
+}
+
+/**
+ * Resolves all pending bets for a given game that has finished.
  * @param {object} game - The Mongoose game object that has just finished.
  * @param {object} session - The Mongoose database session.
+ * @param {object} io - The Socket.IO server instance.
  */
-const resolveBetsForGame = async (game, session) => {
+const resolveBetsForGame = async (game, session, io) => {
   // Find all pending single bets for this game
   const singleBetsToResolve = await Bet.find({
-    game: game._id,
+    "selections.game": game._id,
     status: "pending",
     betType: "single",
   }).session(session);
@@ -25,7 +34,7 @@ const resolveBetsForGame = async (game, session) => {
       `Resolving ${singleBetsToResolve.length} single bets for game: ${game._id}`
     );
     for (const bet of singleBetsToResolve) {
-      await processSingleBet(bet, game, session);
+      await processSingleBet(bet, game, session, io);
     }
   }
 
@@ -41,7 +50,7 @@ const resolveBetsForGame = async (game, session) => {
       `Checking ${multiBetsToCheck.length} multi-bets containing game: ${game._id}`
     );
     for (const bet of multiBetsToCheck) {
-      await checkAndResolveMultiBet(bet, session);
+      await checkAndResolveMultiBet(bet, session, io);
     }
   }
 };
@@ -51,23 +60,19 @@ const resolveBetsForGame = async (game, session) => {
  * @param {object} bet - The Mongoose bet object.
  * @param {object} game - The finished game object.
  * @param {object} session - The Mongoose database session.
+ * @param {object} io - The Socket.IO server instance.
  */
-async function processSingleBet(bet, game, session) {
+async function processSingleBet(bet, game, session, io) {
   const user = await User.findById(bet.user).session(session);
   if (!user) {
     console.warn(`User for bet ${bet._id} not found. Skipping.`);
     return;
   }
 
-  if (bet.outcome === game.result) {
+  const selection = bet.selections[0];
+  if (selection.outcome === game.result) {
     // --- Bet is WON ---
-    let winningOdds =
-      bet.outcome === "A"
-        ? bet.oddsAtTimeOfBet.home
-        : bet.outcome === "B"
-        ? bet.oddsAtTimeOfBet.away
-        : bet.oddsAtTimeOfBet.draw;
-    const payout = bet.stake * winningOdds;
+    const payout = bet.stake * selection.odds;
     bet.status = "won";
     bet.payout = parseFloat(payout.toFixed(2));
     user.walletBalance += bet.payout;
@@ -81,48 +86,79 @@ async function processSingleBet(bet, game, session) {
       game: game._id,
       description: `Winnings for bet on ${game.homeTeam} vs ${game.awayTeam}`,
     }).save({ session });
+
+    await user.save({ session });
+    await bet.save({ session });
+
+    const notificationMessage = `Your bet on ${game.homeTeam} vs ${game.awayTeam} won!`;
+    io.to(user._id.toString()).emit("bet_settled", {
+      status: "won",
+      message: notificationMessage,
+      payout: bet.payout,
+    });
+    await new Notification({
+      user: user._id,
+      message: `${notificationMessage} You won ${formatCurrency(bet.payout)}.`,
+      type: `bet_won`,
+      link: `/my-bets`,
+    }).save({ session });
   } else {
     // --- Bet is LOST ---
     bet.status = "lost";
     bet.payout = 0;
-  }
+    await bet.save({ session });
 
-  await bet.save({ session });
-  await user.save({ session });
+    const notificationMessage = `Your bet on ${game.homeTeam} vs ${game.awayTeam} was settled.`;
+    io.to(user._id.toString()).emit("bet_settled", {
+      status: "lost",
+      message: notificationMessage,
+    });
+    await new Notification({
+      user: user._id,
+      message: notificationMessage,
+      type: `bet_lost`,
+      link: `/my-bets`,
+    }).save({ session });
+  }
 }
 
 /**
  * Checks if a multi-bet can be resolved, and if so, processes its outcome.
  * @param {object} bet - The Mongoose multi-bet object.
  * @param {object} session - The Mongoose database session.
+ * @param {object} io - The Socket.IO server instance.
  */
-async function checkAndResolveMultiBet(bet, session) {
+async function checkAndResolveMultiBet(bet, session, io) {
   const gameIds = bet.selections.map((s) => s.game);
   const gamesInBet = await Game.find({ _id: { $in: gameIds } }).session(
     session
   );
 
-  // Check if all games in the bet slip have finished
   const allGamesFinished = gamesInBet.every(
     (g) => g.status === "finished" && g.result
   );
   if (!allGamesFinished || gamesInBet.length !== bet.selections.length) {
-    return; // Skip this bet if one or more games are still pending
+    return;
+  }
+
+  const user = await User.findById(bet.user).session(session);
+  if (!user) {
+    console.warn(`User for multi-bet ${bet._id} not found. Skipping.`);
+    return;
   }
 
   let isBetWon = true;
   for (const selection of bet.selections) {
     const game = gamesInBet.find((g) => g._id.equals(selection.game));
-    if (selection.outcome !== game.result) {
+    if (!game || selection.outcome !== game.result) {
       isBetWon = false;
-      break; // One loss is enough to lose the whole bet
+      break;
     }
   }
 
   if (isBetWon) {
     bet.status = "won";
-    bet.payout = bet.stake * bet.totalOdds;
-    const user = await User.findById(bet.user).session(session);
+    bet.payout = parseFloat((bet.stake * bet.totalOdds).toFixed(2));
     user.walletBalance += bet.payout;
 
     await new Transaction({
@@ -135,13 +171,34 @@ async function checkAndResolveMultiBet(bet, session) {
     }).save({ session });
 
     await user.save({ session });
-    console.log(
-      `✅ Multi-bet ${bet._id} was WON. Payout: $${bet.payout.toFixed(2)}.`
-    );
+
+    const notificationMessage = `Your multi-bet with ${bet.selections.length} selections won!`;
+    io.to(user._id.toString()).emit("bet_settled", {
+      status: "won",
+      message: notificationMessage,
+      payout: bet.payout,
+    });
+    await new Notification({
+      user: user._id,
+      message: `${notificationMessage} You won ${formatCurrency(bet.payout)}.`,
+      type: "bet_won",
+      link: "/my-bets",
+    }).save({ session });
   } else {
     bet.status = "lost";
     bet.payout = 0;
-    console.log(`❌ Multi-bet ${bet._id} was LOST.`);
+
+    const notificationMessage = `Your multi-bet with ${bet.selections.length} selections was settled.`;
+    io.to(user._id.toString()).emit("bet_settled", {
+      status: "lost",
+      message: notificationMessage,
+    });
+    await new Notification({
+      user: user._id,
+      message: notificationMessage,
+      type: "bet_lost",
+      link: "/my-bets",
+    }).save({ session });
   }
   await bet.save({ session });
 }
