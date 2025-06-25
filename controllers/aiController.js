@@ -8,6 +8,10 @@ const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
 const bettingService = require("../services/bettingService");
 const { fetchGeneralSportsNews } = require("../services/newsService");
+const {
+  generateRecommendations,
+} = require("../services/recommendationService");
+const { fetchNewsForTopic } = require("../services/newsService");
 
 // This global variable will hold the initialized AI client.
 let genAI;
@@ -308,12 +312,15 @@ exports.parseBetIntent = async (req, res, next) => {
 exports.analyzeGame = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
+
     const { gameId } = req.body;
-    const game = await Game.findById(gameId);
+    const game = await Game.findById(gameId).lean();
+
     if (!game) {
       return res.status(404).json({ msg: "Game not found." });
     }
@@ -322,8 +329,33 @@ exports.analyzeGame = async (req, res, next) => {
         .status(400)
         .json({ msg: "AI analysis is only available for upcoming games." });
     }
+
+    // FIX: Fetch fresh news for both teams to provide real-time context to the AI.
+    const homeTeamNews = await fetchNewsForTopic(game.homeTeam);
+    const awayTeamNews = await fetchNewsForTopic(game.awayTeam);
+
+    const context = `
+      News for ${game.homeTeam}:
+      ${homeTeamNews.join("\n") || "No recent news found."}
+      
+      News for ${game.awayTeam}:
+      ${awayTeamNews.join("\n") || "No recent news found."}
+    `;
+
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `Provide a brief, data-driven analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Focus on recent form or key matchups. Do not predict a winner. Keep it to 2-3 sentences.`;
+
+    // FIX: Updated prompt to be more specific and use the fetched news context.
+    const prompt = `
+      You are a sports betting analyst. Based ONLY on the following news context, 
+      provide a brief, neutral, 2-4 sentence analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. 
+      Mention recent form, key player status (injuries, transfers), or team morale if found in the text. 
+      Do not invent information or predict a winner.
+
+      CONTEXT:
+      ---
+      ${context}
+    `;
+
     const result = await model.generateContent(prompt);
     res.status(200).json({ analysis: result.response.text().trim() });
   } catch (error) {
@@ -504,13 +536,16 @@ exports.getNewsSummary = async (req, res, next) => {
     const apiKey = process.env.GOOGLE_API_KEY;
     const cseId = process.env.GOOGLE_CSE_ID;
 
+    // FIX: Throw a more specific error if keys are missing
     if (!apiKey || !cseId) {
-      throw new Error(
+      const err = new Error(
         "Google Search API Key or CSE ID is not configured on the server."
       );
+      err.statusCode = 501; // 501 Not Implemented
+      return next(err);
     }
 
-    const searchUrl = `[https://www.googleapis.com/customsearch/v1?key=$](https://www.googleapis.com/customsearch/v1?key=$){apiKey}&cx=${cseId}&q=${encodeURIComponent(
+    const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}&q=${encodeURIComponent(
       topic + " football news"
     )}`;
 
@@ -569,6 +604,86 @@ exports.getRecommendedGames = async (req, res, next) => {
     });
   } catch (error) {
     console.error("Error in getRecommendedGames:", error);
+    next(error);
+  }
+};
+
+// --- Generate Social Media Post ---
+exports.generateSocialPost = async (req, res, next) => {
+  try {
+    if (!genAI) throw new Error("AI Service not initialized.");
+
+    const { gameId } = req.body;
+    if (!gameId) {
+      const err = new Error("A gameId is required.");
+      err.statusCode = 400;
+      return next(err);
+    }
+
+    const game = await Game.findById(gameId).lean();
+    if (!game) {
+      const err = new Error("Game not found.");
+      err.statusCode = 404;
+      return next(err);
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `
+      You are a social media manager for a sports betting app called "BetWise". 
+      Your tone is exciting and engaging.
+      Create a short social media post for the upcoming match: "${game.homeTeam} vs. ${game.awayTeam}" in the "${game.league}".
+      The post should build hype for the match and end with a call to action to place bets on BetWise.
+      Include 3-4 relevant hashtags.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const post = result.response.text().trim();
+
+    res.status(200).json({ post });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- NEW FUNCTION: Analyze Bet Slip ---
+exports.analyzeBetSlip = async (req, res, next) => {
+  try {
+    if (!genAI) throw new Error("AI Service not initialized.");
+    const { selections } = req.body;
+
+    if (!Array.isArray(selections) || selections.length < 2) {
+      const err = new Error("At least two selections are required for analysis.");
+      err.statusCode = 400;
+      return next(err);
+    }
+
+    // --- Calculations for AI Context ---
+    const totalOdds = selections.reduce((acc, s) => acc * s.odds, 1);
+    const impliedProbability = (1 / totalOdds) * 100;
+    const riskiestLeg = selections.reduce((riskiest, current) => 
+        current.odds > riskiest.odds ? current : riskiest
+    );
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `
+      You are a sports betting analyst providing a risk summary for a multi-bet slip on the "BetWise" app.
+      The user's slip has ${selections.length} selections with total odds of ${totalOdds.toFixed(2)}.
+
+      - The implied probability of this bet winning is approximately ${impliedProbability.toFixed(2)}%.
+      - The single riskiest leg in this bet is "${riskiestLeg.gameDetails.homeTeam} vs ${riskiestLeg.gameDetails.awayTeam}" with odds of ${riskiestLeg.odds}.
+
+      Based on this data, provide a concise, 2-3 sentence analysis for the user. 
+      Start by classifying the bet's risk level (e.g., "This is a high-risk, high-reward bet...").
+      Mention the low probability and point out the riskiest leg as a key factor.
+      Do not add any conversational fluff. Be direct and analytical.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const analysis = result.response.text().trim();
+    
+    res.status(200).json({ analysis });
+
+  } catch (error) {
     next(error);
   }
 };

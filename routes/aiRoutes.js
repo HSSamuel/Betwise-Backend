@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const { auth } = require("../middleware/authMiddleware");
+// FIX: Import 'isAdmin' from the auth middleware
+const { auth, isAdmin } = require("../middleware/authMiddleware");
 const aiController = require("../controllers/aiController");
 const {
   handleValidationErrors,
@@ -30,5 +31,15 @@ router.post(
   aiController.getNewsSummary
 );
 router.get("/recommendations", auth, aiController.getRecommendedGames);
+
+// --- ADD THE NEW ROUTE with the corrected import ---
+router.post(
+  "/generate-social-post",
+  auth,
+  isAdmin,
+  aiController.generateSocialPost
+);
+
+router.post("/analyze-slip", auth, aiController.analyzeBetSlip);
 
 module.exports = router;
