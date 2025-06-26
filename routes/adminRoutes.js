@@ -108,4 +108,11 @@ router.delete(
   deleteRanking
 );
 
+router.post(
+  "/social-campaign",
+  auth,
+  isAdmin,
+  adminController.generateSocialMediaCampaign
+);
+
 module.exports = router;

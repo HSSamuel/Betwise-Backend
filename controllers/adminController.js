@@ -751,3 +751,42 @@ exports.getRiskOverview = async (req, res, next) => {
     next(error);
   }
 };
+
+exports.generateSocialMediaCampaign = async (req, res, next) => {
+  const { league, dateRange } = req.body;
+  try {
+    const startDate = new Date(new Date(dateRange).setHours(0, 0, 0, 0));
+    const endDate = new Date(new Date(dateRange).setHours(23, 59, 59, 999));
+
+    const games = await Game.find({
+      league,
+      matchDate: { $gte: startDate, $lte: endDate },
+      status: "upcoming",
+    }).limit(5);
+
+    if (games.length === 0) {
+      return res
+        .status(404)
+        .json({
+          msg: "No upcoming games found for the specified league and date.",
+        });
+    }
+
+    const prompt = `Generate a series of engaging social media posts for the following games in the ${league}. Include relevant hashtags and a call to action to bet on Betwise.
+      
+      Games:
+      ${games
+        .map((game) => `- ${game.homeTeam} vs ${game.awayTeam}`)
+        .join("\n")}
+      
+      Return the response as a JSON object with a "campaign" key containing an array of strings, where each string is a social media post.`;
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const result = await model.generateContent(prompt);
+    const campaign = JSON.parse(result.response.text());
+
+    res.status(200).json(campaign);
+  } catch (error) {
+    next(error);
+  }
+};

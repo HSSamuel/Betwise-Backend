@@ -181,6 +181,21 @@ const startServer = async () => {
         }
       });
 
+      // Add this new cron job
+      cron.schedule("0 */6 * * *", async () => {
+        // Runs every 6 hours
+        console.log("🤖 Cron: Sending Pre-Game Intelligent Tips...");
+        try {
+          // This script will need to be created
+          require("./scripts/sendPreGameTips");
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled pre-game tips job:",
+            error.message
+          );
+        }
+      });
+
       console.log("✅ All background tasks have been scheduled correctly.");
     });
   } catch (dbConnectionError) {

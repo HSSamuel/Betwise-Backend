@@ -12,6 +12,7 @@ const {
   generateRecommendations,
 } = require("../services/recommendationService");
 const { fetchNewsForTopic } = require("../services/newsService");
+const aiBetSuggestionService = require("../services/aiBetSuggestionService");
 
 // This global variable will hold the initialized AI client.
 let genAI;
@@ -652,7 +653,9 @@ exports.analyzeBetSlip = async (req, res, next) => {
     const { selections } = req.body;
 
     if (!Array.isArray(selections) || selections.length < 2) {
-      const err = new Error("At least two selections are required for analysis.");
+      const err = new Error(
+        "At least two selections are required for analysis."
+      );
       err.statusCode = 400;
       return next(err);
     }
@@ -660,17 +663,25 @@ exports.analyzeBetSlip = async (req, res, next) => {
     // --- Calculations for AI Context ---
     const totalOdds = selections.reduce((acc, s) => acc * s.odds, 1);
     const impliedProbability = (1 / totalOdds) * 100;
-    const riskiestLeg = selections.reduce((riskiest, current) => 
-        current.odds > riskiest.odds ? current : riskiest
+    const riskiestLeg = selections.reduce((riskiest, current) =>
+      current.odds > riskiest.odds ? current : riskiest
     );
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `
       You are a sports betting analyst providing a risk summary for a multi-bet slip on the "BetWise" app.
-      The user's slip has ${selections.length} selections with total odds of ${totalOdds.toFixed(2)}.
+      The user's slip has ${
+        selections.length
+      } selections with total odds of ${totalOdds.toFixed(2)}.
 
-      - The implied probability of this bet winning is approximately ${impliedProbability.toFixed(2)}%.
-      - The single riskiest leg in this bet is "${riskiestLeg.gameDetails.homeTeam} vs ${riskiestLeg.gameDetails.awayTeam}" with odds of ${riskiestLeg.odds}.
+      - The implied probability of this bet winning is approximately ${impliedProbability.toFixed(
+        2
+      )}%.
+      - The single riskiest leg in this bet is "${
+        riskiestLeg.gameDetails.homeTeam
+      } vs ${riskiestLeg.gameDetails.awayTeam}" with odds of ${
+      riskiestLeg.odds
+    }.
 
       Based on this data, provide a concise, 2-3 sentence analysis for the user. 
       Start by classifying the bet's risk level (e.g., "This is a high-risk, high-reward bet...").
@@ -680,10 +691,92 @@ exports.analyzeBetSlip = async (req, res, next) => {
 
     const result = await model.generateContent(prompt);
     const analysis = result.response.text().trim();
-    
-    res.status(200).json({ analysis });
 
+    res.status(200).json({ analysis });
   } catch (error) {
+    next(error);
+  }
+};
+
+exports.getBetSlipSuggestions = async (req, res, next) => {
+  try {
+    const { selections, totalOdds } = req.body;
+
+    const [combinationSuggestions, alternativeBet] = await Promise.all([
+      aiBetSuggestionService.getCombinationSuggestions(selections),
+      aiBetSuggestionService.getAlternativeBet(selections, totalOdds),
+    ]);
+
+    res.status(200).json({
+      combinationSuggestions,
+      alternativeBet,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.getPersonalizedNewsFeed = async (req, res, next) => {
+  try {
+    // 1. Get all bets for the user and populate the game data for each selection
+    const userBets = await Bet.find({ user: req.user._id })
+      .populate({
+        path: "selections.game",
+        model: "Game",
+        select: "homeTeam awayTeam",
+      })
+      .lean();
+
+    if (!userBets || userBets.length === 0) {
+      return res.status(200).json({ news: [] });
+    }
+
+    // 2. Use JavaScript to count the occurrences of each team
+    const teamCounts = {};
+    userBets.forEach((bet) => {
+      bet.selections.forEach((selection) => {
+        // Ensure the game data exists before trying to access it
+        if (
+          selection.game &&
+          selection.game.homeTeam &&
+          selection.game.awayTeam
+        ) {
+          teamCounts[selection.game.homeTeam] =
+            (teamCounts[selection.game.homeTeam] || 0) + 1;
+          teamCounts[selection.game.awayTeam] =
+            (teamCounts[selection.game.awayTeam] || 0) + 1;
+        }
+      });
+    });
+
+    // 3. Sort the teams by frequency and get the top 3
+    const sortedTeams = Object.entries(teamCounts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([team]) => team);
+
+    const teamNames = sortedTeams.filter(Boolean); // Filter out any null/undefined team names
+
+    if (teamNames.length === 0) {
+      return res.status(200).json({ news: [] });
+    }
+
+    // 4. Fetch news for the top teams
+    const newsPromises = teamNames.map((team) => fetchNewsForTopic(team));
+    const newsResults = await Promise.all(newsPromises);
+
+    const news = teamNames.map((team, index) => ({
+      team,
+      summary: newsResults[index]
+        ? newsResults[index].join(" ")
+        : "No recent news found.",
+    }));
+
+    res.status(200).json({ news });
+  } catch (error) {
+    // Add detailed logging on the backend for debugging
+    console.error("ERROR in getPersonalizedNewsFeed:", error);
+    // Pass the error to the centralized error handler
     next(error);
   }
 };
