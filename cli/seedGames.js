@@ -1,10 +1,8 @@
-// node cli/seedGames.js --source=local
-
 const mongoose = require("mongoose");
 const Game = require("../models/Game");
 const config = require("../config/env");
 const { syncGames } = require("../services/sportsDataService");
-const localGames = require("./localSeedData.json"); // Import local data
+const localGames = require("./localSeedData.json");
 
 const dbUri = config.MONGODB_URI;
 
@@ -14,25 +12,44 @@ const seedDB = async () => {
     process.exit(1);
   }
 
-  // Check for a --source flag, e.g., --source local
-  const sourceArg = process.argv.find((arg) => arg.startsWith("--source"));
-  const source = sourceArg ? sourceArg.split("=")[1] : "apifootball";
+  const sourceArg = process.argv.find((arg) => arg.startsWith("--source="));
+  let source;
+
+  if (sourceArg) {
+    source = sourceArg.split("=")[1];
+  } else {
+    source = process.argv[2] || "apifootball";
+  }
 
   console.log(`ℹ️  Using data source: ${source}`);
 
   try {
+    console.log("⏳ Connecting to MongoDB...");
     await mongoose.connect(dbUri);
     console.log("✅ MongoDB connected successfully.");
 
-    console.log("🔥 Clearing existing game data...");
-    await Game.deleteMany({});
-    console.log("✅ Existing games cleared.");
+    // FIX: The line that clears the database has been removed.
+    // This will now ADD games to your database without deleting existing ones.
+    // console.log("🔥 Clearing existing game data...");
+    // await Game.deleteMany({});
+    // console.log("✅ Existing games cleared.");
 
     if (source === "local") {
       console.log(
         `🌱 Seeding with ${localGames.length} games from localSeedData.json...`
       );
-      await Game.insertMany(localGames);
+      // Use findOneAndUpdate with upsert to avoid creating duplicates
+      for (const gameData of localGames) {
+        await Game.findOneAndUpdate(
+          {
+            homeTeam: gameData.homeTeam,
+            awayTeam: gameData.awayTeam,
+            league: gameData.league,
+          },
+          { $set: gameData },
+          { upsert: true, new: true }
+        );
+      }
     } else {
       console.log(
         `🌱 Seeding with fresh upcoming games from the '${source}' API...`
@@ -41,9 +58,7 @@ const seedDB = async () => {
     }
 
     const gameCount = await Game.countDocuments();
-    console.log(
-      `✅ Successfully seeded the database with ${gameCount} new games.`
-    );
+    console.log(`✅ Database now contains a total of ${gameCount} games.`);
   } catch (err) {
     console.error("❌ Error during dynamic database seeding:", err);
   } finally {

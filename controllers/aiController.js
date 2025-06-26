@@ -595,7 +595,7 @@ exports.getRecommendedGames = async (req, res, next) => {
   try {
     const randomGames = await Game.aggregate([
       { $match: { status: "upcoming", isDeleted: { $ne: true } } },
-      { $sample: { size: 3 } },
+      { $sample: { size: 2 } },
     ]);
 
     res.status(200).json({
@@ -645,7 +645,7 @@ exports.generateSocialPost = async (req, res, next) => {
   }
 };
 
-// --- NEW FUNCTION: Analyze Bet Slip ---
+// --- Analyze Bet Slip ---
 exports.analyzeBetSlip = async (req, res, next) => {
   try {
     if (!genAI) throw new Error("AI Service not initialized.");

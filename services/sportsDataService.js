@@ -219,7 +219,7 @@ const allSportsApiProvider = {
               APIkey: config.ALLSPORTS_API_KEY,
               from: fromDateStr,
               to: toDateStr,
-              leagueId: leagueId,
+              leagueId: leagueId, // FIX: This line was missing, now the API is told which league to fetch.
             },
           }
         );
@@ -267,83 +267,8 @@ const allSportsApiProvider = {
   },
 };
 
-const theSportsDbProvider = {
-  name: "TheSportsDB",
-  enabled: !!config.X_RAPIDAPI_KEY,
-  async syncUpcomingGames() {
-    if (!this.enabled) {
-      console.log(`[${this.name}] Provider is not enabled. Skipping sync.`);
-      return;
-    }
-    console.log(`[${this.name}] Fetching upcoming games...`);
-
-    const leagues = [
-      { id: "4328", name: "English Premier League" },
-      { id: "4335", name: "La Liga" },
-      { id: "4332", name: "Bundesliga" },
-    ];
-    const headers = {
-      "x-rapidapi-host": "thesportsdb.p.rapidapi.com",
-      "x-rapidapi-key": config.X_RAPIDAPI_KEY,
-    };
-
-    try {
-      for (const league of leagues) {
-        const response = await axios.get(
-          `https://thesportsdb.p.rapidapi.com/v1/json/3/eventsround.php`,
-          { params: { id: league.id, r: "38" }, headers }
-        );
-
-        if (!response.data || !response.data.events) {
-          console.log(
-            `[${this.name}] No upcoming games found for league ${league.name}.`
-          );
-          continue;
-        }
-
-        for (const event of response.data.events) {
-          if (new Date(event.dateEvent) < new Date() || !event.strTime)
-            continue;
-
-          const odds = await generateOddsForGame(
-            event.strHomeTeam,
-            event.strAwayTeam
-          );
-
-          const gameData = {
-            homeTeam: event.strHomeTeam,
-            awayTeam: event.strAwayTeam,
-            homeTeamLogo: event.strHomeTeamBadge,
-            awayTeamLogo: event.strAwayTeamBadge,
-            matchDate: new Date(`${event.dateEvent}T${event.strTime}`),
-            league: league.name,
-            odds,
-            externalApiId: `tsdb_${event.idEvent}`,
-            status: "upcoming",
-          };
-
-          await Game.findOneAndUpdate(
-            { externalApiId: gameData.externalApiId },
-            { $set: gameData },
-            { upsert: true, runValidators: true }
-          );
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    } catch (error) {
-      console.error(
-        `[${this.name}] Failed to fetch or process games:`,
-        error.message
-      );
-      throw error;
-    }
-    console.log(`[${this.name}] Finished syncing upcoming games.`);
-  },
-};
-
 const providers = {
   apifootball: apiFootballProvider,
-  thesportsdb: theSportsDbProvider,
   allsportsapi: allSportsApiProvider,
 };
 

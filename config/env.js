@@ -67,11 +67,7 @@ const config = {
   APIFOOTBALL_KEY: assertVariable(
     "APIFOOTBALL_KEY",
     "API key for API-Football."
-  ),
-  X_RAPIDAPI_KEY: assertVariable(
-    "X_RAPIDAPI_KEY",
-    "API key for RapidAPI (used for TheSportsDB)."
-  ),
+   ),
   ALLSPORTS_API_KEY: process.env.ALLSPORTS_API_KEY, // Added AllSportsApi key
 
   // Google APIs (OAuth & Search)

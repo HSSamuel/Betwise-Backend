@@ -57,6 +57,15 @@ app.use(helmet());
 app.use(express.json());
 app.use(morgan(process.env.NODE_ENV === "development" ? "dev" : "combined"));
 
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Limit auth-related requests to 20 per 15 mins
+  message:
+    "Too many login or registration attempts, please try again after 15 minutes.",
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const generalApiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
