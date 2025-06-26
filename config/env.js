@@ -67,7 +67,7 @@ const config = {
   APIFOOTBALL_KEY: assertVariable(
     "APIFOOTBALL_KEY",
     "API key for API-Football."
-   ),
+  ),
   ALLSPORTS_API_KEY: process.env.ALLSPORTS_API_KEY, // Added AllSportsApi key
 
   // Google APIs (OAuth & Search)
@@ -137,7 +137,8 @@ const config = {
   PLATFORM_RISK_THRESHOLD: parseFloat(
     process.env.PLATFORM_RISK_THRESHOLD || "10000"
   ),
-  ADMIN_ALERT_EMAIL: process.env.ADMIN_ALERT_EMAIL, // Optional for a script
+  ADMIN_ALERT_EMAIL: process.env.ADMIN_ALERT_EMAIL,
+  HIGH_STAKE_THRESHOLD: parseInt(process.env.HIGH_STAKE_THRESHOLD || "100", 10),
 };
 
 module.exports = config;

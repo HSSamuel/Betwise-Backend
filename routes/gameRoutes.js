@@ -1,5 +1,3 @@
-// In: Bet/Backend/routes/gameRoutes.js
-
 const express = require("express");
 const router = express.Router();
 const { auth, isAdmin } = require("../middleware/authMiddleware");
@@ -30,9 +28,7 @@ const {
 
 // --- Public Routes ---
 router.get("/", validateGetGames, handleValidationErrors, getGames);
-router.get("/live", getLiveGames); 
-router.get("/feed", auth, getPersonalizedGames);
-router.get("/suggestions", auth, getGameSuggestions);
+router.get("/live", getLiveGames);
 router.get(
   "/:id/odds-history",
   validateGameId,
@@ -40,6 +36,10 @@ router.get(
   getGameOddsHistory
 );
 router.get("/:id", validateGameId, handleValidationErrors, getGameById);
+
+// --- Authenticated User Routes ---
+router.get("/feed", auth, getPersonalizedGames);
+router.get("/suggestions", auth, getGameSuggestions);
 
 // --- Admin-Only Routes ---
 router.post(
@@ -82,8 +82,6 @@ router.patch(
   handleValidationErrors,
   cancelGame
 );
-
-// NEW: Route for manually adjusting odds
 router.patch(
   "/:id/adjust-odds",
   auth,
@@ -92,10 +90,5 @@ router.patch(
   handleValidationErrors,
   adjustOdds
 );
-
-// --- Public Routes ---
-router.get("/", validateGetGames, handleValidationErrors, getGames);
-router.get("/live", getLiveGames); // <-- ADD THIS NEW ROUTE
-router.get("/feed", auth, getPersonalizedGames);
 
 module.exports = router;
