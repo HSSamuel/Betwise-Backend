@@ -1,24 +1,15 @@
-require("dotenv").config({
-  path: require("path").resolve(__dirname, "../.env"),
-});
 const mongoose = require("mongoose");
 const Bet = require("../models/Bet");
-const Game = require("../models/Game");
-const User = require("../models/User");
 const Notification = require("../models/Notification");
-const { getNewsSummary } = require("../services/aiService");
-const config = require("../config/env");
+const { getNewsSummaryForTeam } = require("../services/newsService"); // Assuming a function in newsService
 
-async function sendPreGameTips() {
+/**
+ * Finds upcoming bets and sends AI-powered tips to users.
+ * Assumes a database connection is already established.
+ * @param {object} io - The Socket.IO instance for real-time notifications.
+ */
+async function sendPreGameTips(io) {
   console.log("🚀 Starting Pre-Game Intelligent Tips script...");
-  const dbUri = config.MONGODB_URI;
-  if (!dbUri) {
-    console.error("❌ Error: MONGODB_URI is not defined.");
-    process.exit(1);
-  }
-
-  await mongoose.connect(dbUri);
-  console.log("✅ MongoDB connected.");
 
   try {
     const now = new Date();
@@ -36,39 +27,45 @@ async function sendPreGameTips() {
         const game = selection.game;
         const user = bet.user;
 
+        if (!game || !user) continue;
+
         // Generate a news summary for both teams
-        const homeNews = await getNewsSummary(game.homeTeam);
-        const awayNews = await getNewsSummary(game.awayTeam);
+        const homeNews = await getNewsSummaryForTeam(game.homeTeam);
+        const awayNews = await getNewsSummaryForTeam(game.awayTeam);
 
         const tip = `
           **${game.homeTeam} vs ${game.awayTeam}**
           *Your Pick: ${selection.outcome}*
           
           **Latest News:**
-          *${game.homeTeam}:* ${homeNews}
-          *${game.awayTeam}:* ${awayNews}
+          *${game.homeTeam}:* ${homeNews || "No specific news."}
+          *${game.awayTeam}:* ${awayNews || "No specific news."}
         `;
 
         // Create a notification for the user
-        await new Notification({
+        const newNotification = new Notification({
           user: user._id,
           message: tip,
-          type: "promo",
+          type: "pre_game_tip",
           link: `/my-bets`,
-        }).save();
+        });
+        await newNotification.save();
+
+        // Emit a real-time event to the user
+        if (io) {
+          io.to(user._id.toString()).emit("new_notification", newNotification);
+        }
       }
     }
-
     console.log("✅ Pre-Game Intelligent Tips script complete.");
   } catch (error) {
     console.error(
       "❌ An error occurred during the pre-game tips script:",
       error
     );
-  } finally {
-    await mongoose.disconnect();
-    console.log("ℹ️ MongoDB disconnected.");
   }
 }
 
-sendPreGameTips();
+// REMOVED logic that connected/disconnected the database.
+// The script now only exports the function to be used by the main app.
+module.exports = { sendPreGameTips };

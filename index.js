@@ -11,13 +11,19 @@ require("./config/passport-setup");
 const cron = require("node-cron");
 const jwt = require("jsonwebtoken");
 
+// ** UPDATE: Added User model import for Socket.IO logic **
+const User = require("./models/User");
+
 const {
   syncGames,
   syncLiveAndFinishedGames,
 } = require("./services/sportsDataService");
 const { analyzePlatformRisk } = require("./scripts/monitorPlatformRisk");
-// FIX: Make sure this new script is imported
 const { cleanupStaleGames } = require("./scripts/cleanupStaleGames");
+// ** UPDATE: Import functions from scripts directly **
+const { analyzePlayerChurn } = require("./scripts/analyzePlayerChurn");
+const { sendPreGameTips } = require("./scripts/sendPreGameTips");
+
 const AviatorService = require("./services/aviatorService");
 const aviatorRoutes = require("./routes/aviatorRoutes");
 
@@ -89,33 +95,77 @@ app.use(`${apiVersion}/promotions`, require("./routes/promoRoutes"));
 app.use(`${apiVersion}/admin/rankings`, require("./routes/rankingRoutes"));
 // --- Leaderboard routes ---
 app.use(`${apiVersion}/leaderboards`, require("./routes/leaderboardRoutes"));
+// ** UPDATE: Added missing notification routes **
+app.use(`${apiVersion}/notifications`, require("./routes/notificationRoutes"));
 
+// ** UPDATE: Modified middleware to allow guest connections and handle auth gracefully **
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
-  if (!token) {
-    return next(new Error("Authentication error: Token not provided."));
-  }
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return next(new Error("Authentication error: Invalid token."));
-    }
-    socket.user = decoded;
+  if (token) {
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) {
+        console.warn("Socket auth error: Invalid token. Proceeding as guest.");
+        return next();
+      }
+      socket.user = decoded; // Attach user payload (id, role, etc.)
+      next();
+    });
+  } else {
+    // No token, this is a guest user
     next();
-  });
+  }
 });
 
-io.on("connection", (socket) => {
-  console.log(`✅ Authenticated socket connected: ${socket.id}`);
-  socket.on("joinUserRoom", (userId) => {
-    if (socket.user.id === userId) {
-      socket.join(userId);
-      console.log(
-        `   - User ${socket.user.username} joined their room: ${userId}`
-      );
+// ** UPDATE: Modified connection handler for authentic presence **
+io.on("connection", async (socket) => {
+  // ** UPDATE: Get userId from the authenticated socket.user object **
+  const userId = socket.user?.id;
+
+  if (userId) {
+    console.log(`⚡: User connected: ${userId} with socket ID: ${socket.id}`);
+    socket.join(userId);
+    try {
+      // ** UPDATE: Set 'isOnline' to true and update 'lastSeen' on connection **
+      const now = new Date();
+      await User.findByIdAndUpdate(userId, {
+        isOnline: true,
+        lastSeen: now,
+      });
+      // ** UPDATE: Broadcast the new status to all clients **
+      io.emit("userStatusUpdate", {
+        userId,
+        isOnline: true,
+        lastSeen: now,
+      });
+      console.log(`🟢 User ${userId} is now online.`);
+    } catch (error) {
+      console.error(`Error setting user ${userId} to online:`, error);
     }
-  });
-  socket.on("disconnect", () => {
-    console.log(`❌ Socket disconnected: ${socket.id}`);
+  } else {
+    console.log(`⚡: Guest connected with socket ID: ${socket.id}`);
+  }
+
+  socket.on("disconnect", async () => {
+    // ** UPDATE: This logic now correctly uses the userId established on connection **
+    if (userId) {
+      try {
+        const lastSeenTime = new Date();
+        await User.findByIdAndUpdate(userId, {
+          isOnline: false,
+          lastSeen: lastSeenTime,
+        });
+        io.emit("userStatusUpdate", {
+          userId,
+          isOnline: false,
+          lastSeen: lastSeenTime,
+        });
+        console.log(`🔴 User ${userId} has disconnected.`);
+      } catch (error) {
+        console.error(`Error setting user ${userId} to offline:`, error);
+      }
+    } else {
+      console.log("🔥: A guest disconnected");
+    }
   });
 });
 
@@ -147,7 +197,7 @@ const startServer = async () => {
       cron.schedule("*/30 * * * *", async () => {
         console.log("🕒 Cron: Fetching upcoming games from all providers...");
         try {
-          await syncGames("allsportsapi"); // Defaulting to the new provider
+          await syncGames("apifootball"); // Using a single provider for consistency
         } catch (error) {
           console.error(
             "❌ Error during scheduled upcoming games sync:",
@@ -168,7 +218,6 @@ const startServer = async () => {
         }
       });
 
-      // FIX: Add the new cron job for cleaning up stale games, scheduled to run every hour.
       cron.schedule("0 * * * *", async () => {
         console.log("🕒 Cron: Running stale game cleanup...");
         try {
@@ -181,13 +230,11 @@ const startServer = async () => {
         }
       });
 
-      // Add this new cron job
       cron.schedule("0 */6 * * *", async () => {
-        // Runs every 6 hours
         console.log("🤖 Cron: Sending Pre-Game Intelligent Tips...");
         try {
-          // This script will need to be created
-          require("./scripts/sendPreGameTips");
+          // ** UPDATE: Pass io object to script to enable real-time notifications **
+          await sendPreGameTips(io);
         } catch (error) {
           console.error(
             "❌ Error during scheduled pre-game tips job:",

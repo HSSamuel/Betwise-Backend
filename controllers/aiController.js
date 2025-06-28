@@ -486,11 +486,23 @@ exports.searchGamesWithAI = async (req, res, next) => {
     const rawAiText = result.response.text();
     const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
 
-    if (!jsonMatch || !jsonMatch[0]) {
-      throw new Error("AI could not process the search query.");
+    let params;
+    // FIX: Add a robust try...catch block specifically for JSON parsing.
+    try {
+      if (!jsonMatch || !jsonMatch[0]) {
+        throw new Error("No valid JSON found in AI response.");
+      }
+      params = JSON.parse(jsonMatch[0]);
+    } catch (parseError) {
+      console.error("AI Search Parse Error:", parseError.message);
+      // Instead of crashing, return a helpful message to the user.
+      return res.status(200).json({
+        message:
+          "I couldn't understand that search. Could you please rephrase it?",
+        games: [], // Return an empty array
+      });
     }
 
-    const params = JSON.parse(jsonMatch[0]);
     const filter = { status: "upcoming" };
 
     if (params.team) {
@@ -777,6 +789,55 @@ exports.getPersonalizedNewsFeed = async (req, res, next) => {
     // Add detailed logging on the backend for debugging
     console.error("ERROR in getPersonalizedNewsFeed:", error);
     // Pass the error to the centralized error handler
+    next(error);
+  }
+};
+
+exports.searchGamesAI = async (req, res, next) => {
+  try {
+    const { query } = req.body;
+    if (!query) {
+      return res.status(400).json({ msg: "Search query is required." });
+    }
+
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `
+      You are a sports data analyst. A user has provided the following search query: "${query}".
+      Extract key entities from this query, such as team names, league names, or concepts like "today's games".
+      Return a JSON object with a single key, "searchTerms", which is an array of the extracted strings.
+      For example, if the query is "show me premier league games with manchester united", the output should be:
+      { "searchTerms": ["Premier League", "Manchester United"] }
+      If the query is "games today", the output could be { "searchTerms": ["today"] }.
+      Return ONLY the raw JSON object.
+    `;
+
+    const result = await model.generateContent(prompt);
+    const aiResponse = extractJson(result.response.text());
+
+    if (
+      !aiResponse ||
+      !aiResponse.searchTerms ||
+      aiResponse.searchTerms.length === 0
+    ) {
+      return res.status(200).json({ games: [] });
+    }
+
+    const searchRegex = aiResponse.searchTerms.map(
+      (term) => new RegExp(term, "i")
+    );
+
+    const gameFilter = {
+      $or: [
+        { homeTeam: { $in: searchRegex } },
+        { awayTeam: { $in: searchRegex } },
+        { league: { $in: searchRegex } },
+      ],
+      status: "upcoming",
+    };
+
+    const games = await Game.find(gameFilter).limit(20).lean();
+    res.status(200).json({ games });
+  } catch (error) {
     next(error);
   }
 };

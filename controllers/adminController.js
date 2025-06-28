@@ -41,7 +41,6 @@ exports.getPlatformStats = async (req, res, next) => {
   }
 };
 
-// Admin: Get financial dashboard
 exports.getFinancialDashboard = async (req, res, next) => {
   try {
     const financialData = await Transaction.aggregate([
@@ -270,7 +269,6 @@ exports.getAllUsersFullDetails = async (req, res, next) => {
   }
 };
 
-// --- Corrected adminGetUserDetail Function ---
 exports.adminGetUserDetail = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -284,7 +282,11 @@ exports.adminGetUserDetail = async (req, res, next) => {
     } = req.query;
 
     const userId = new mongoose.Types.ObjectId(id);
-    const user = await User.findById(userId).select("-password").lean();
+
+    // ** CORRECTION HERE **
+    // The query is now simplified. We remove the .select() projection entirely.
+    // Mongoose will automatically exclude the password due to the 'select: false' option in the User model.
+    const user = await User.findById(userId).lean();
 
     if (!user) {
       const err = new Error("User not found.");
@@ -292,7 +294,13 @@ exports.adminGetUserDetail = async (req, res, next) => {
       return next(err);
     }
 
-    // --- Correction: Build dynamic filters and sort options ---
+    // ** NEW FALLBACK LOGIC **
+    // This ensures that even for old users who have never logged in since the feature was added,
+    // we show their join date as their "last seen" time.
+    if (!user.lastLogin) {
+      user.lastLogin = user.createdAt;
+    }
+
     const transactionFilter = { user: userId };
     if (txType) transactionFilter.type = txType;
     if (startDate && endDate)
@@ -776,11 +784,9 @@ exports.generateSocialMediaCampaign = async (req, res, next) => {
     }).limit(5);
 
     if (games.length === 0) {
-      return res
-        .status(404)
-        .json({
-          msg: "No upcoming games found for the specified league and date.",
-        });
+      return res.status(404).json({
+        msg: "No upcoming games found for the specified league and date.",
+      });
     }
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Using Flash to avoid rate limits

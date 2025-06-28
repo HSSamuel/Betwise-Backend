@@ -1,8 +1,5 @@
-// In: models/User.js
-
 const mongoose = require("mongoose");
 
-// This sub-schema should be defined only once at the top.
 const payoutDetailsSchema = new mongoose.Schema(
   {
     bankName: { type: String, trim: true },
@@ -44,7 +41,7 @@ const userSchema = new mongoose.Schema(
     },
     profilePicture: {
       type: String,
-      default: "", // Default to an empty string
+      default: "",
     },
     password: {
       type: String,
@@ -73,6 +70,17 @@ const userSchema = new mongoose.Schema(
     },
     passwordResetToken: { type: String, select: false },
     passwordResetExpires: { type: Date, select: false },
+
+    // ** NEW & UPDATED FIELDS **
+    isOnline: {
+      type: Boolean,
+      default: false,
+    },
+    lastSeen: {
+      type: Date,
+      default: Date.now,
+    },
+
     favoriteLeagues: { type: [String], default: [] },
     responsibleGambling: {
       status: {
@@ -106,7 +114,6 @@ const userSchema = new mongoose.Schema(
       },
     },
     payoutDetails: {
-      // Correctly added here
       type: payoutDetailsSchema,
       default: {},
     },
