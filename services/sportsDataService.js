@@ -4,6 +4,7 @@ const Game = require("../models/Game");
 const { generateOddsForGame } = require("./oddsService");
 const config = require("../config/env");
 const { resolveBetsForGame } = require("./betResolutionService");
+const { generateLiveOdds } = require("./aiLiveOddsService");
 const leaguesToSync = require("../config/leagues.json");
 
 // A comprehensive set of all known "live" statuses from the API-Football documentation
@@ -84,6 +85,8 @@ const syncLiveAndFinishedGames = async (io) => {
       const newStatus = fixture.fixture.status.short;
       const homeGoals = fixture.goals.home;
       const awayGoals = fixture.goals.away;
+      const scoreHasChanged =
+        game.scores.home !== homeGoals || game.scores.away !== awayGoals;
 
       // Case 1: Game has finished
       if (newStatus === "FT" && game.status !== "finished") {
@@ -124,14 +127,24 @@ const syncLiveAndFinishedGames = async (io) => {
       // Case 2: Game is live and the status or score has changed
       else if (
         LIVE_STATUSES.has(newStatus) &&
-        (game.status !== "live" ||
-          game.scores.home !== homeGoals ||
-          game.scores.away !== awayGoals)
+        (game.status !== "live" || scoreHasChanged)
       ) {
         game.status = "live";
         game.scores.home = homeGoals;
         game.scores.away = awayGoals;
         game.elapsedTime = fixture.fixture.status.elapsed;
+
+        // ** Generate and update live odds **
+        const newLiveOdds = await generateLiveOdds(game);
+        if (newLiveOdds) {
+          game.odds = newLiveOdds; // Update the main odds object
+          console.log(
+            `[Live Odds] AI updated odds for ${game.homeTeam} vs ${game.awayTeam}:`,
+            newLiveOdds
+          );
+          io.emit("liveOddsUpdate", { gameId: game._id, odds: newLiveOdds });
+        }
+
         await game.save();
         updatedCount++;
         console.log(
