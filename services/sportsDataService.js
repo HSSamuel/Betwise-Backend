@@ -6,24 +6,50 @@ const config = require("../config/env");
 const { resolveBetsForGame } = require("./betResolutionService");
 const leaguesToSync = require("../config/leagues.json");
 
+// A comprehensive set of all known "live" statuses from the API-Football documentation
+const LIVE_STATUSES = new Set([
+  "1H",
+  "HT",
+  "2H",
+  "ET",
+  "BT",
+  "P",
+  "SUSP",
+  "INT",
+]);
+
 const syncLiveAndFinishedGames = async (io) => {
-  console.log("... Checking for live and finished games from API-Football...");
-  const leagueIds = [
-    "39", // Premier League (England)
-    "140", // La Liga (Spain)
-    "135", // Serie A (Italy)
-    "78", // Bundesliga (Germany)
-    "61", // Ligue 1 (France)
-    "2", // UEFA Champions League
-    "3", // UEFA Europa League
-  ];
+  console.log("-----------------------------------------------------");
+  console.log(
+    `[Live Sync] Starting check for live and finished games at ${new Date().toLocaleTimeString()}`
+  );
+
+  if (!config.APIFOOTBALL_KEY) {
+    console.error(
+      "[Live Sync] Error: APIFootball Key is missing. Cannot sync live games."
+    );
+    return;
+  }
+
+  // Dynamically create the 'live' parameter string from your config file
+  const leagueIds = leaguesToSync
+    .map((l) => l.apiFootballId)
+    .filter((id) => id)
+    .join("-");
+
+  if (!leagueIds) {
+    console.log(
+      "[Live Sync] No leagues configured in leagues.json. Ending task."
+    );
+    return;
+  }
 
   try {
     const response = await axios.get(
       `https://v3.football.api-sports.io/fixtures`,
       {
         params: {
-          live: "all",
+          live: leagueIds, // Use the dynamically generated list of league IDs
         },
         headers: { "x-apisports-key": config.APIFOOTBALL_KEY },
       }
@@ -31,34 +57,45 @@ const syncLiveAndFinishedGames = async (io) => {
 
     const fixtures = response.data.response;
     if (!fixtures || fixtures.length === 0) {
-      console.log("... No live or recently finished games found from API.");
+      console.log(
+        "[Live Sync] No live or recently finished games found from the API for your configured leagues."
+      );
+      console.log("-----------------------------------------------------");
       return;
     }
 
     console.log(
-      `[Sync] Fetched ${fixtures.length} live/finished fixtures from API.`
+      `[Live Sync] Fetched ${fixtures.length} live/finished fixtures from API.`
     );
     let updatedCount = 0;
     let settledCount = 0;
 
-    for (const fixture of response.data.response) {
-      const game = await Game.findOne({
-        externalApiId: `apif_${fixture.fixture.id}`,
-      });
-      if (!game) continue;
+    for (const fixture of fixtures) {
+      const externalApiId = `apif_${fixture.fixture.id}`;
+      const game = await Game.findOne({ externalApiId });
+
+      if (!game) {
+        console.warn(
+          `[Live Sync] Warning: Found live fixture for a game not in the DB (ID: ${externalApiId}). It might be a new game from a league you recently added.`
+        );
+        continue;
+      }
 
       const newStatus = fixture.fixture.status.short;
+      const homeGoals = fixture.goals.home;
+      const awayGoals = fixture.goals.away;
 
+      // Case 1: Game has finished
       if (newStatus === "FT" && game.status !== "finished") {
         const session = await mongoose.startSession();
         session.startTransaction();
         try {
           game.status = "finished";
-          game.scores.home = fixture.goals.home;
-          game.scores.away = fixture.goals.away;
+          game.scores.home = homeGoals;
+          game.scores.away = awayGoals;
 
-          if (fixture.goals.home > fixture.goals.away) game.result = "A";
-          else if (fixture.goals.away > fixture.goals.home) game.result = "B";
+          if (homeGoals > awayGoals) game.result = "A";
+          else if (awayGoals > homeGoals) game.result = "B";
           else game.result = "Draw";
 
           await game.save({ session });
@@ -67,7 +104,7 @@ const syncLiveAndFinishedGames = async (io) => {
 
           settledCount++;
           console.log(
-            `✅ Game Finished & Settled: ${game.homeTeam} vs ${game.awayTeam}`
+            `[Live Sync] ✅ Game Finished & Settled: ${game.homeTeam} vs ${game.awayTeam}`
           );
           io.emit("gameResultUpdated", {
             gameId: game._id,
@@ -76,40 +113,57 @@ const syncLiveAndFinishedGames = async (io) => {
           });
         } catch (error) {
           await session.abortTransaction();
-          console.error(`Error settling game ${game._id}:`, error.message);
+          console.error(
+            `[Live Sync] Error settling game ${game._id}:`,
+            error.message
+          );
         } finally {
           session.endSession();
         }
-      } else if (
-        newStatus.startsWith("1H") ||
-        newStatus.startsWith("2H") ||
-        newStatus === "HT"
+      }
+      // Case 2: Game is live and the status or score has changed
+      else if (
+        LIVE_STATUSES.has(newStatus) &&
+        (game.status !== "live" ||
+          game.scores.home !== homeGoals ||
+          game.scores.away !== awayGoals)
       ) {
-        if (
-          game.scores.home !== fixture.goals.home ||
-          game.scores.away !== fixture.goals.away
-        ) {
-          game.status = "live";
-          game.scores.home = fixture.goals.home;
-          game.scores.away = fixture.goals.away;
-          game.elapsedTime = fixture.fixture.status.elapsed;
-          await game.save();
-          updatedCount++;
-          console.log(
-            `⚽ Score Update: ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${game.awayTeam}`
-          );
-          io.emit("gameUpdate", game);
-        }
+        game.status = "live";
+        game.scores.home = homeGoals;
+        game.scores.away = awayGoals;
+        game.elapsedTime = fixture.fixture.status.elapsed;
+        await game.save();
+        updatedCount++;
+        console.log(
+          `[Live Sync] ⚽ Score Update: ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${game.awayTeam}`
+        );
+        io.emit("gameUpdate", game);
       }
     }
 
-    console.log(
-      `[Sync] Summary: ${updatedCount} games updated, ${settledCount} games settled.`
-    );
+    if (updatedCount > 0 || settledCount > 0) {
+      console.log(
+        `[Live Sync] Summary: ${updatedCount} games updated, ${settledCount} games settled.`
+      );
+    } else {
+      console.log(
+        "[Live Sync] No changes to game statuses or scores were needed."
+      );
+    }
   } catch (error) {
-    console.error("Error fetching live/finished games:", error.message);
-    throw error;
+    if (error.response) {
+      console.error(
+        `[Live Sync] Error fetching live/finished games. Status: ${error.response.status}, Data:`,
+        error.response.data
+      );
+    } else {
+      console.error(
+        "[Live Sync] Error fetching live/finished games:",
+        error.message
+      );
+    }
   }
+  console.log("-----------------------------------------------------");
 };
 
 const apiFootballProvider = {
@@ -138,9 +192,10 @@ const apiFootballProvider = {
           {
             params: {
               league: leagueId,
+              season: new Date().getFullYear(), // Use current year for the season
               from: fromDateStr,
               to: toDateStr,
-              status: "NS",
+              status: "NS", // Not Started
             },
             headers: { "x-apisports-key": config.APIFOOTBALL_KEY },
           }
@@ -219,7 +274,7 @@ const allSportsApiProvider = {
               APIkey: config.ALLSPORTS_API_KEY,
               from: fromDateStr,
               to: toDateStr,
-              leagueId: leagueId, // FIX: This line was missing, now the API is told which league to fetch.
+              leagueId: leagueId,
             },
           }
         );

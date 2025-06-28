@@ -9,6 +9,7 @@ const { syncGames } = require("../services/sportsDataService");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/env"); // <-- IMPORT the new config
 const Notification = require("../models/Notification");
+const { extractJson } = require("../utils/jsonExtractor");
 
 // Initialize Gemini AI
 if (!config.GEMINI_API_KEY) {
@@ -311,10 +312,7 @@ exports.adminGetUserDetail = async (req, res, next) => {
     const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
 
     const [transactions, bets] = await Promise.all([
-      Transaction.find(transactionFilter)
-        .sort(sortOptions)
-        .limit(100)
-        .lean(),
+      Transaction.find(transactionFilter).sort(sortOptions).limit(100).lean(),
       Bet.find(betFilter)
         .sort(sortOptions)
         .limit(100)
@@ -469,20 +467,29 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
     withdrawalRequest.processedAt = new Date();
 
     if (status === "approved") {
-        const user = withdrawalRequest.user;
-        if (user.walletBalance < withdrawalRequest.amount) throw new Error("User no longer has sufficient funds for this withdrawal.");
-        user.walletBalance -= withdrawalRequest.amount;
-        await new Transaction({
-            user: user._id, type: "withdrawal", amount: -withdrawalRequest.amount, balanceAfter: user.walletBalance, description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
-        }).save({ session });
-        await user.save({ session });
+      const user = withdrawalRequest.user;
+      if (user.walletBalance < withdrawalRequest.amount)
+        throw new Error(
+          "User no longer has sufficient funds for this withdrawal."
+        );
+      user.walletBalance -= withdrawalRequest.amount;
+      await new Transaction({
+        user: user._id,
+        type: "withdrawal",
+        amount: -withdrawalRequest.amount,
+        balanceAfter: user.walletBalance,
+        description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
+      }).save({ session });
+      await user.save({ session });
     }
     await withdrawalRequest.save({ session });
     await session.commitTransaction();
-    
+
     // --- Correction: Define variables and use them for both notification types ---
     const notificationType = `withdrawal_${withdrawalRequest.status}`;
-    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(2)} has been ${withdrawalRequest.status}.`;
+    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(
+      2
+    )} has been ${withdrawalRequest.status}.`;
 
     try {
       await sendEmail({
@@ -496,7 +503,7 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
         emailError
       );
     }
-    
+
     await new Notification({
       user: withdrawalRequest.user._id,
       message: notificationMessage,
@@ -504,10 +511,12 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
       link: "/wallet",
     }).save(); // Can be saved outside the session
 
-    req.io.to(withdrawalRequest.user._id.toString()).emit("withdrawal_processed", {
+    req.io
+      .to(withdrawalRequest.user._id.toString())
+      .emit("withdrawal_processed", {
         status: withdrawalRequest.status,
         message: notificationMessage,
-    });
+      });
 
     res.status(200).json({
       msg: `Withdrawal request has been ${status}.`,
@@ -753,8 +762,10 @@ exports.getRiskOverview = async (req, res, next) => {
 };
 
 exports.generateSocialMediaCampaign = async (req, res, next) => {
-  const { league, dateRange } = req.body;
   try {
+    if (!genAI) throw new Error("AI Service not initialized.");
+
+    const { league, dateRange } = req.body;
     const startDate = new Date(new Date(dateRange).setHours(0, 0, 0, 0));
     const endDate = new Date(new Date(dateRange).setHours(23, 59, 59, 999));
 
@@ -772,18 +783,31 @@ exports.generateSocialMediaCampaign = async (req, res, next) => {
         });
     }
 
-    const prompt = `Generate a series of engaging social media posts for the following games in the ${league}. Include relevant hashtags and a call to action to bet on Betwise.
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Using Flash to avoid rate limits
+    const prompt = `
+      You are a social media manager for a sports betting app called "BetWise". 
+      Your tone is exciting and engaging.
+      Create a series of social media posts for the following games in the "${league}".
+      The post should build hype for the match and end with a call to action to place bets on BetWise.
+      Include 3-4 relevant hashtags.
+      Return the response as a JSON object with a "campaign" key containing an array of strings, where each string is a social media post.
+      Return ONLY the JSON object.
       
       Games:
       ${games
         .map((game) => `- ${game.homeTeam} vs ${game.awayTeam}`)
         .join("\n")}
-      
-      Return the response as a JSON object with a "campaign" key containing an array of strings, where each string is a social media post.`;
+    `;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const result = await model.generateContent(prompt);
-    const campaign = JSON.parse(result.response.text());
+    const rawText = result.response.text();
+
+    // Use the robust extractor function here
+    const campaign = extractJson(rawText);
+
+    if (!campaign) {
+      throw new Error("AI failed to generate a valid JSON campaign.");
+    }
 
     res.status(200).json(campaign);
   } catch (error) {

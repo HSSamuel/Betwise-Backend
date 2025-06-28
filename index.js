@@ -196,6 +196,18 @@ const startServer = async () => {
         }
       });
 
+      cron.schedule("0 3 * * *", async () => {
+        console.log("🤖 Cron: Analyzing player churn patterns...");
+        try {
+          await analyzePlayerChurn();
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled player churn analysis:",
+            error.message
+          );
+        }
+      });
+
       console.log("✅ All background tasks have been scheduled correctly.");
     });
   } catch (dbConnectionError) {
