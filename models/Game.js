@@ -97,6 +97,10 @@ const gameSchema = new mongoose.Schema(
       },
       default: "upcoming",
     },
+    isTestGame: {
+      type: Boolean,
+      default: false,
+    },
     summary: {
       type: String,
       trim: true,

@@ -1,0 +1,185 @@
+[
+  {
+    "homeTeam": "Palmeiras",
+    "awayTeam": "Botafogo",
+    "league": "Club World Cup",
+    "matchDate": "2025-06-28T16:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/121.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/120.png",
+    "odds": { "home": 2.0, "away": 3.75, "draw": 3.5 }
+  },
+  {
+    "homeTeam": "Benfica",
+    "awayTeam": "Chelsea",
+    "league": "Club World Cup",
+    "matchDate": "2025-06-28T20:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/211.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/49.png",
+    "odds": { "home": 3.0, "away": 2.3, "draw": 3.4 }
+  },
+  {
+    "stage": "Quarter-finals",
+    "homeTeam": "Paris Saint-Germain",
+    "awayTeam": "Inter Miami",
+    "league": "Club World Cup",
+    "matchDate": "2025-06-29T16:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/85.png",
+    "awayTeamLogo": "https://upload.wikimedia.org/wikipedia/en/5/5c/Inter_Miami_CF_logo.svg",
+    "odds": { "home": 1.65, "away": 4.8, "draw": 4.0 }
+  },
+  {
+    "homeTeam": "Flamengo",
+    "awayTeam": "Bayern Munich",
+    "league": "Club World Cup",
+    "matchDate": "2025-06-29T20:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/126.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/157.png",
+    "odds": { "home": 4.5, "away": 1.7, "draw": 3.8 }
+  },
+  {
+    "stage": "Quarter-finals",
+    "homeTeam": "Internazionale",
+    "awayTeam": "Fluminense",
+    "league": "Club World Cup",
+    "matchDate": "2025-06-30T19:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/505.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/127.png",
+    "odds": { "home": 1.8, "away": 4.1, "draw": 3.6 }
+  },
+  {
+    "homeTeam": "Manchester City",
+    "awayTeam": "Al Hilal",
+    "league": "Club World Cup",
+    "matchDate": "2025-07-01T01:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/50.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/2932.png",
+    "odds": { "home": 1.35, "away": 7.5, "draw": 5.0 }
+  },
+  {
+    "stage": "Quarter-finals",
+    "homeTeam": "Real Madrid",
+    "awayTeam": "Juventus",
+    "league": "Club World Cup",
+    "matchDate": "2025-07-01T19:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/541.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/496.png",
+    "odds": { "home": 1.9, "away": 3.8, "draw": 3.5 }
+  },
+  {
+    "homeTeam": "Borussia Dortmund",
+    "awayTeam": "Monterrey",
+    "league": "Club World Cup",
+    "matchDate": "2025-07-02T01:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/165.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/2280.png",
+    "odds": { "home": 1.7, "away": 4.5, "draw": 3.9 }
+  },
+  {
+    "homeTeam": "AC Milan",
+    "awayTeam": "Chelsea",
+    "league": "Club Friendlies",
+    "matchDate": "2025-07-29T01:30:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/489.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/49.png",
+    "odds": { "home": 2.65, "away": 2.5, "draw": 3.3 }
+  },
+  {
+    "homeTeam": "Barcelona",
+    "awayTeam": "Manchester City",
+    "league": "Club Friendlies",
+    "matchDate": "2025-07-31T01:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/529.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/50.png",
+    "odds": { "home": 2.5, "away": 2.2, "draw": 3.6 }
+  },
+  {
+    "homeTeam": "Arsenal",
+    "awayTeam": "Bayern Munich",
+    "league": "Club Friendlies",
+    "matchDate": "2025-08-03T01:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/42.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/157.png",
+    "odds": { "home": 2.3, "away": 2.6, "draw": 3.5 }
+  },
+  {
+    "homeTeam": "Liverpool",
+    "awayTeam": "Bournemouth",
+    "league": "Premier League",
+    "matchDate": "2025-08-15T20:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/40.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/35.png",
+    "odds": { "home": 1.3, "away": 8.0, "draw": 5.0 }
+  },
+  {
+    "homeTeam": "Manchester United",
+    "awayTeam": "Arsenal",
+    "league": "Premier League",
+    "matchDate": "2025-08-17T16:30:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/33.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/42.png",
+    "odds": { "home": 2.3, "away": 2.9, "draw": 3.4 }
+  },
+  {
+    "homeTeam": "Inter Milan",
+    "awayTeam": "AC Milan",
+    "league": "Serie A",
+    "matchDate": "2025-08-17T18:45:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/505.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/489.png",
+    "odds": { "home": 2.5, "away": 2.75, "draw": 3.3 }
+  },
+  {
+    "homeTeam": "Real Madrid",
+    "awayTeam": "Barcelona",
+    "league": "La Liga",
+    "matchDate": "2025-08-17T19:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/541.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/529.png",
+    "odds": { "home": 2.2, "away": 3.1, "draw": 3.4 }
+  },
+  {
+    "homeTeam": "Paris Saint-Germain",
+    "awayTeam": "Olympique de Marseille",
+    "league": "Ligue 1",
+    "matchDate": "2025-08-17T20:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/85.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/81.png",
+    "odds": { "home": 1.5, "away": 6.0, "draw": 4.5 }
+  },
+  {
+    "homeTeam": "LA Galaxy",
+    "awayTeam": "Inter Miami",
+    "league": "MLS",
+    "matchDate": "2025-08-24T02:30:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/1609.png",
+    "awayTeamLogo": "https://upload.wikimedia.org/wikipedia/en/5/5c/Inter_Miami_CF_logo.svg",
+    "odds": { "home": 2.4, "away": 2.6, "draw": 3.75 }
+  },
+  {
+    "homeTeam": "Ajax",
+    "awayTeam": "PSV Eindhoven",
+    "league": "Eredivisie",
+    "matchDate": "2025-09-14T14:30:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/194.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/197.png",
+    "odds": { "home": 2.6, "away": 2.6, "draw": 3.5 }
+  },
+  {
+    "homeTeam": "Benfica",
+    "awayTeam": "Porto",
+    "league": "Primeira Liga",
+    "matchDate": "2025-09-28T20:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/211.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/212.png",
+    "odds": { "home": 2.3, "away": 3.0, "draw": 3.4 }
+  },
+  {
+    "homeTeam": "Al-Nassr",
+    "awayTeam": "Al-Hilal",
+    "league": "Saudi Professional League",
+    "matchDate": "2025-10-03T18:00:00.000Z",
+    "homeTeamLogo": "https://media.api-sports.io/football/teams/2941.png",
+    "awayTeamLogo": "https://media.api-sports.io/football/teams/2932.png",
+    "odds": { "home": 2.8, "away": 2.4, "draw": 3.5 }
+  }
+]

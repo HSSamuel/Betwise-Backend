@@ -87,6 +87,9 @@ const syncLiveAndFinishedGames = async (io) => {
       const awayGoals = fixture.goals.away;
       const scoreHasChanged =
         game.scores.home !== homeGoals || game.scores.away !== awayGoals;
+      // ** FIX: Added a check to see if the elapsed time has changed **
+      const timeHasChanged =
+        game.elapsedTime !== fixture.fixture.status.elapsed;
 
       // Case 1: Game has finished
       if (newStatus === "FT" && game.status !== "finished") {
@@ -96,6 +99,7 @@ const syncLiveAndFinishedGames = async (io) => {
           game.status = "finished";
           game.scores.home = homeGoals;
           game.scores.away = awayGoals;
+          game.elapsedTime = 90; // Set final time
 
           if (homeGoals > awayGoals) game.result = "A";
           else if (awayGoals > homeGoals) game.result = "B";
@@ -124,10 +128,11 @@ const syncLiveAndFinishedGames = async (io) => {
           session.endSession();
         }
       }
-      // Case 2: Game is live and the status or score has changed
+      // Case 2: Game is live and the status, score, or time has changed
       else if (
         LIVE_STATUSES.has(newStatus) &&
-        (game.status !== "live" || scoreHasChanged)
+        // ** FIX: Added the timeHasChanged condition to the check **
+        (game.status !== "live" || scoreHasChanged || timeHasChanged)
       ) {
         game.status = "live";
         game.scores.home = homeGoals;
@@ -135,22 +140,26 @@ const syncLiveAndFinishedGames = async (io) => {
         game.elapsedTime = fixture.fixture.status.elapsed;
 
         // ** Generate and update live odds **
-        const newLiveOdds = await generateLiveOdds(game);
-        if (newLiveOdds) {
-          game.odds = newLiveOdds; // Update the main odds object
-          console.log(
-            `[Live Odds] AI updated odds for ${game.homeTeam} vs ${game.awayTeam}:`,
-            newLiveOdds
-          );
-          io.emit("liveOddsUpdate", { gameId: game._id, odds: newLiveOdds });
+        if (scoreHasChanged) {
+          // Only update odds if the score changes to reduce AI calls
+          const newLiveOdds = await generateLiveOdds(game);
+          if (newLiveOdds) {
+            game.odds = newLiveOdds; // Update the main odds object
+            console.log(
+              `[Live Odds] AI updated odds for ${game.homeTeam} vs ${game.awayTeam}:`,
+              newLiveOdds
+            );
+            io.emit("liveOddsUpdate", { gameId: game._id, odds: newLiveOdds });
+          }
         }
 
         await game.save();
         updatedCount++;
         console.log(
-          `[Live Sync] ⚽ Score Update: ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${game.awayTeam}`
+          `[Live Sync] ⚽ Score Update: ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${game.awayTeam} (${game.elapsedTime}')`
         );
-        io.emit("gameUpdate", game);
+        // ** FIX: Emit the complete, updated game object **
+        io.emit("gameUpdate", game.toObject());
       }
     }
 

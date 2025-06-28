@@ -3,6 +3,7 @@ const Game = require("../models/Game");
 const config = require("../config/env");
 const { syncGames } = require("../services/sportsDataService");
 const localGames = require("./localSeedData.json");
+const parseArgs = require("yargs-parser");
 
 const dbUri = config.MONGODB_URI;
 
@@ -12,14 +13,9 @@ const seedDB = async () => {
     process.exit(1);
   }
 
-  const sourceArg = process.argv.find((arg) => arg.startsWith("--source="));
-  let source;
-
-  if (sourceArg) {
-    source = sourceArg.split("=")[1];
-  } else {
-    source = process.argv[2] || "apifootball";
-  }
+  // Use yargs-parser to reliably get arguments
+  const args = parseArgs(process.argv.slice(2));
+  const source = args.source || "apifootball";
 
   console.log(`ℹ️  Using data source: ${source}`);
 
@@ -28,27 +24,27 @@ const seedDB = async () => {
     await mongoose.connect(dbUri);
     console.log("✅ MongoDB connected successfully.");
 
-    // FIX: The line that clears the database has been removed.
-    // This will now ADD games to your database without deleting existing ones.
-    // console.log("🔥 Clearing existing game data...");
-    // await Game.deleteMany({});
-    // console.log("✅ Existing games cleared.");
-
     if (source === "local") {
-      console.log(
-        `🌱 Seeding with ${localGames.length} games from localSeedData.json...`
-      );
-      // Use findOneAndUpdate with upsert to avoid creating duplicates
-      for (const gameData of localGames) {
-        await Game.findOneAndUpdate(
-          {
-            homeTeam: gameData.homeTeam,
-            awayTeam: gameData.awayTeam,
-            league: gameData.league,
-          },
-          { $set: gameData },
-          { upsert: true, new: true }
+      if (!localGames || localGames.length === 0) {
+        console.warn(
+          "⚠️  Warning: localSeedData.json is empty. No games to seed."
         );
+      } else {
+        console.log(
+          `🌱 Seeding with ${localGames.length} games from localSeedData.json...`
+        );
+        for (const gameData of localGames) {
+          const dataToSave = { ...gameData, isTestGame: true };
+          await Game.findOneAndUpdate(
+            {
+              homeTeam: gameData.homeTeam,
+              awayTeam: gameData.awayTeam,
+              league: gameData.league,
+            },
+            { $set: dataToSave },
+            { upsert: true, new: true }
+          );
+        }
       }
     } else {
       console.log(

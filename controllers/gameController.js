@@ -165,7 +165,6 @@ const getGames = async (req, res, next) => {
   filter.isDeleted = { $ne: true };
   if (league) filter.league = { $regex: new RegExp(league, "i") };
 
-  // FIX: Only add the 'status' property to the filter if it exists in the query.
   if (status) {
     filter.status = status;
   }
@@ -175,13 +174,17 @@ const getGames = async (req, res, next) => {
     const endDate = new Date(new Date(date).setHours(23, 59, 59, 999));
     filter.matchDate = { $gte: startDate, $lte: endDate };
   }
+
   const skip = (page - 1) * limit;
+
   const games = await Game.find(filter)
     .sort({ matchDate: 1 })
     .limit(limit)
     .skip(skip)
     .lean();
+
   const totalGames = await Game.countDocuments(filter);
+
   res.json({
     games,
     currentPage: page,
@@ -207,6 +210,7 @@ const createGame = async (req, res, next) => {
       summary: gameSummary,
     });
     await game.save();
+    req.io.emit("new_game", game);
     res.status(201).json({
       message: `Match added: ${game.homeTeam} vs ${game.awayTeam}.`,
       game,
@@ -406,6 +410,19 @@ const adjustOdds = async (req, res, next) => {
   }
 };
 
+const getLiveGamesFeed = async (req, res, next) => {
+  try {
+    // This query correctly fetches games with the 'live' status
+    // ** FIX: Added .lean() to ensure all data including scores and time is sent reliably. **
+    const liveGames = await Game.find({ status: "live" })
+      .sort({ matchDate: "desc" })
+      .lean();
+    res.json({ games: liveGames });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   validateGetGames,
   validateCreateGame,
@@ -426,4 +443,5 @@ module.exports = {
   createMultipleGames,
   getLiveGames,
   adjustOdds,
+  getLiveGamesFeed,
 };
