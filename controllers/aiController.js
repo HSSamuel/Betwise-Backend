@@ -13,6 +13,7 @@ const {
 } = require("../services/recommendationService");
 const { fetchNewsForTopic } = require("../services/newsService");
 const aiBetSuggestionService = require("../services/aiBetSuggestionService");
+const TeamRanking = require("../models/TeamRanking");
 
 // This global variable will hold the initialized AI client.
 let genAI;
@@ -212,18 +213,23 @@ exports.handleChat = async (req, res, next) => {
       .limit(3)
       .lean();
 
-    const systemPrompt = `You are "BetWise AI", a helpful assistant for a sports betting app. The user is "${
-      user.username
-    }". Your role is conversational. You can answer questions about the user's account, find games, provide sports news, and give game results.
-      
-        ### LIVE DATA FOR THIS USER (for context only):
-        - Wallet Balance: $${user.walletBalance.toFixed(2)}
-        - Recent Bets: ${formatBetsForPrompt(recentBets)}
-        - Recent Transactions: ${formatTransactionsForPrompt(
-          recentTransactions
-        )}
-        
-        Now, respond to the user's message: "${message}"`;
+      const favoriteLeaguesString =
+        user.favoriteLeagues?.length > 0
+          ? user.favoriteLeagues.join(", ")
+          : "None specified yet";
+
+      const systemPrompt = `You are "BetWise AI", a helpful assistant for a sports betting app. The user is "${
+        user.username
+      }".
+    Your role is conversational and helpful.
+  
+    ### LIVE DATA FOR THIS USER (for context only):
+    - Wallet Balance: $${user.walletBalance.toFixed(2)}
+    - Favorite Leagues: ${favoriteLeaguesString} // New data point
+    - Recent Bets: ${formatBetsForPrompt(recentBets)}
+    - Recent Transactions: ${formatTransactionsForPrompt(recentTransactions)}
+  
+    Now, respond to the user's message: "${message}"`;
 
     const result = await model.generateContent(systemPrompt);
     const rawAiText = result.response.text();
@@ -322,43 +328,100 @@ exports.analyzeGame = async (req, res, next) => {
     const { gameId } = req.body;
     const game = await Game.findById(gameId).lean();
 
-    if (!game) {
-      return res.status(404).json({ msg: "Game not found." });
-    }
-    if (game.status !== "upcoming") {
-      return res
-        .status(400)
-        .json({ msg: "AI analysis is only available for upcoming games." });
-    }
+    // 1. Fetch Team Power Rankings
+    const homeRankDoc = await TeamRanking.findOne({
+      teamName_lower: game.homeTeam.toLowerCase(),
+    }).lean();
+    const awayRankDoc = await TeamRanking.findOne({
+      teamName_lower: game.awayTeam.toLowerCase(),
+    }).lean();
+    const homeRank = homeRankDoc ? homeRankDoc.ranking : "N/A";
+    const awayRank = awayRankDoc ? awayRankDoc.ranking : "N/A";
 
-    // FIX: Fetch fresh news for both teams to provide real-time context to the AI.
+    // 2. Fetch Recent Form (Last 5 Games)
+    const getTeamForm = async (teamName) => {
+      const teamGames = await Game.find({
+        $or: [{ homeTeam: teamName }, { awayTeam: teamName }],
+        status: "finished",
+      })
+        .sort({ matchDate: -1 })
+        .limit(5)
+        .lean();
+
+      return teamGames
+        .map((g) => {
+          if (g.result === "Draw") return "D";
+          if (
+            (g.homeTeam === teamName && g.result === "A") ||
+            (g.awayTeam === teamName && g.result === "B")
+          ) {
+            return "W";
+          }
+          return "L";
+        })
+        .join("");
+    };
+
+    const homeForm = await getTeamForm(game.homeTeam);
+    const awayForm = await getTeamForm(game.awayTeam);
+
+    // 3. Fetch News (as before)
     const homeTeamNews = await fetchNewsForTopic(game.homeTeam);
     const awayTeamNews = await fetchNewsForTopic(game.awayTeam);
+    const newsContext = `News for ${game.homeTeam}: ${
+      homeTeamNews.join("\\n") || "No recent news."
+    } \\nNews for ${game.awayTeam}: ${
+      awayTeamNews.join("\\n") || "No recent news."
+    }`;
 
-    const context = `
-      News for ${game.homeTeam}:
-      ${homeTeamNews.join("\n") || "No recent news found."}
-      
-      News for ${game.awayTeam}:
-      ${awayTeamNews.join("\n") || "No recent news found."}
-    `;
-
+    // 4. Construct the Enhanced Prompt
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    // FIX: Updated prompt to be more specific and use the fetched news context.
     const prompt = `
-      You are a sports betting analyst. Based ONLY on the following news context, 
-      provide a brief, neutral, 2-4 sentence analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. 
-      Mention recent form, key player status (injuries, transfers), or team morale if found in the text. 
-      Do not invent information or predict a winner.
+      You are an expert sports betting analyst for "BetWise".
+      Provide a comprehensive, data-driven analysis for the upcoming match: ${
+        game.homeTeam
+      } vs. ${game.awayTeam}.
 
-      CONTEXT:
-      ---
-      ${context}
+      Here is the data:
+      - Team Power Ranking: ${game.homeTeam} (${homeRank}) vs. ${
+      game.awayTeam
+    } (${awayRank}).
+      - Recent Form (Last 5): ${game.homeTeam} (${homeForm || "N/A"}) vs. ${
+      game.awayTeam
+    } (${awayForm || "N/A"}).
+      - Key News: ${newsContext}
+
+      Based on ALL available data, generate a structured analysis with the following JSON format. Provide ONLY the raw JSON object:
+      {
+        "keyInsight": "A single sentence summarizing the most critical factor for this match.",
+        "riskLevel": "Low, Medium, or High, representing the unpredictability of the match.",
+        "homeTeamAnalysis": "A brief on ${
+          game.homeTeam
+        }'s strengths/weaknesses.",
+        "awayTeamAnalysis": "A brief on ${
+          game.awayTeam
+        }'s strengths/weaknesses.",
+        "prediction": "A concluding sentence about the likely outcome without guaranteeing it."
+      }
     `;
 
+    // 5. Generate Content and Parse JSON
     const result = await model.generateContent(prompt);
-    res.status(200).json({ analysis: result.response.text().trim() });
+    const analysisObject = extractJson(result.response.text()); // Using the robust JSON extractor
+
+    if (!analysisObject) {
+      // Fallback to a simpler analysis if JSON parsing fails
+      return res
+        .status(200)
+        .json({
+          analysis: {
+            keyInsight: "AI analysis is currently unavailable for this match.",
+          },
+        });
+    }
+
+    res.status(200).json({ analysis: analysisObject });
+    // --- END ENHANCEMENT ---
   } catch (error) {
     console.error("AI game analysis error:", error);
     next(error);
