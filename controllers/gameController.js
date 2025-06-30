@@ -160,10 +160,19 @@ const validateAdjustOdds = [
 ];
 
 const getGames = async (req, res, next) => {
-  const { league, status, date, page = 1, limit = 10 } = req.query;
+  const { league, status, date, page = 1, limit = 100, search } = req.query;
   const filter = {};
   filter.isDeleted = { $ne: true };
   if (league) filter.league = { $regex: new RegExp(league, "i") };
+
+  if (search) {
+    const searchRegex = new RegExp(search, "i");
+    filter.$or = [
+      { homeTeam: searchRegex },
+      { awayTeam: searchRegex },
+      { league: searchRegex },
+    ];
+  }
 
   // FIX: Only add the 'status' property to the filter if it exists in the query.
   if (status) {
@@ -175,9 +184,10 @@ const getGames = async (req, res, next) => {
     const endDate = new Date(new Date(date).setHours(23, 59, 59, 999));
     filter.matchDate = { $gte: startDate, $lte: endDate };
   }
+
   const skip = (page - 1) * limit;
   const games = await Game.find(filter)
-    .sort({ matchDate: 1 })
+    .sort({ status: 1, matchDate: -1 })
     .limit(limit)
     .skip(skip)
     .lean();

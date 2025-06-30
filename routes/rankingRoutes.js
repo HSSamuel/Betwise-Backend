@@ -4,16 +4,7 @@ const { auth, isAdmin } = require("../middleware/authMiddleware");
 const {
   handleValidationErrors,
 } = require("../middleware/validationMiddleware");
-
-const {
-  getPlatformStats,
-  getFinancialDashboard,
-  listUsers,
-  // ... other admin controllers
-  adminDeleteGame,
-} = require("../controllers/adminController");
-
-// --- Implementation: Import Ranking Controllers here ---
+const { param } = require("express-validator");
 const {
   getRankings,
   createRanking,
@@ -23,34 +14,24 @@ const {
   validateUpdateRanking,
 } = require("../controllers/rankingControllers");
 
-const { manualGameSync } = require("../controllers/adminController");
-const { validateGameId } = require("../controllers/gameController");
-const { param } = require("express-validator");
-
-// ... existing admin routes for Dashboard, Users, Withdrawals, etc.
-
-// --- Implementation: Add routes for Team Power Rankings ---
-
 // @route   GET /api/v1/admin/rankings
-// @desc    Admin: Get all team rankings
-// @access  Private (Admin)
-router.get("/rankings", getRankings);
+router.get("/", getRankings);
 
 // @route   POST /api/v1/admin/rankings
-// @desc    Admin: Create a new team ranking
-// @access  Private (Admin)
 router.post(
-  "/rankings",
+  "/",
+  auth,
+  isAdmin,
   validateCreateRanking,
   handleValidationErrors,
   createRanking
 );
 
 // @route   PATCH /api/v1/admin/rankings/:id
-// @desc    Admin: Update an existing team ranking
-// @access  Private (Admin)
 router.patch(
-  "/rankings/:id",
+  "/:id",
+  auth,
+  isAdmin,
   [param("id").isMongoId()],
   validateUpdateRanking,
   handleValidationErrors,
@@ -58,10 +39,10 @@ router.patch(
 );
 
 // @route   DELETE /api/v1/admin/rankings/:id
-// @desc    Admin: Delete a team ranking
-// @access  Private (Admin)
 router.delete(
-  "/rankings/:id",
+  "/:id",
+  auth,
+  isAdmin,
   [param("id").isMongoId()],
   handleValidationErrors,
   deleteRanking

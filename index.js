@@ -10,8 +10,6 @@ const connectDB = require("./config/db");
 require("./config/passport-setup");
 const cron = require("node-cron");
 const jwt = require("jsonwebtoken");
-
-// ** UPDATE: Added User model import for Socket.IO logic **
 const User = require("./models/User");
 
 const {
@@ -23,10 +21,10 @@ const { cleanupStaleGames } = require("./scripts/cleanupStaleGames");
 // ** UPDATE: Import functions from scripts directly **
 const { analyzePlayerChurn } = require("./scripts/analyzePlayerChurn");
 const { sendPreGameTips } = require("./scripts/sendPreGameTips");
+const { sendPromotionalEmails } = require("./scripts/sendPromotionalEmails");
 
 const AviatorService = require("./services/aviatorService");
 const aviatorRoutes = require("./routes/aviatorRoutes");
-// ** UPDATE: Add notification routes import **
 const notificationRoutes = require("./routes/notificationRoutes");
 
 const app = express();
@@ -92,16 +90,11 @@ app.use(`${apiVersion}/users`, require("./routes/userRoutes"));
 app.use(`${apiVersion}/ai`, require("./routes/aiRoutes"));
 app.use(`${apiVersion}/aviator`, aviatorRoutes);
 app.use(`${apiVersion}/promotions`, require("./routes/promoRoutes"));
-// NOTE: These are duplicates and can be cleaned up later.
-// app.use(`${apiVersion}/aviator`, aviatorRoutes);
-// app.use(`${apiVersion}/promotions`, require("./routes/promoRoutes"));
 app.use(`${apiVersion}/admin/rankings`, require("./routes/rankingRoutes"));
 // --- Leaderboard routes ---
 app.use(`${apiVersion}/leaderboards`, require("./routes/leaderboardRoutes"));
-// ** UPDATE: Add notification routes **
 app.use(`${apiVersion}/notifications`, notificationRoutes);
 
-// ** UPDATE: Modified middleware to handle authentication more gracefully **
 io.use((socket, next) => {
   const token = socket.handshake.auth.token;
   if (token) {
@@ -249,6 +242,20 @@ const startServer = async () => {
         } catch (error) {
           console.error(
             "❌ Error during scheduled player churn analysis:",
+            error.message
+          );
+        }
+      });
+
+      // --- NEW: Schedule for sending periodic promotional emails ---
+      // This runs every Monday at 5:30 AM.
+      cron.schedule("30 5 * * 1", async () => {
+        console.log("📧 Cron: Sending weekly promotional emails...");
+        try {
+          await sendPromotionalEmails();
+        } catch (error) {
+          console.error(
+            "❌ Error during scheduled promotional email job:",
             error.message
           );
         }

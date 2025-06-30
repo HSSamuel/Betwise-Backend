@@ -73,6 +73,7 @@ const config = {
   // Google APIs (OAuth & Search)
   GOOGLE_API_KEY: process.env.GOOGLE_API_KEY, // Optional for some scripts
   GOOGLE_CSE_ID: process.env.GOOGLE_CSE_ID, // Optional for some scripts
+  NEWS_API_KEY: process.env.NEWS_API_KEY,
   GOOGLE_CLIENT_ID: assertVariable(
     "GOOGLE_CLIENT_ID",
     "Client ID for Google OAuth."
@@ -131,6 +132,9 @@ const config = {
     "Password for the email sending service."
   ),
   EMAIL_FROM_NAME: process.env.EMAIL_FROM_NAME || "BetWise",
+
+  //dashboard.cohere.com/api-keys
+  COHERE_API_KEY: process.env.COHERE_API_KEY,
 
   // Application Logic & Scripts
   ML_MODEL_API_URL: process.env.ML_MODEL_API_URL, // Optional for a script

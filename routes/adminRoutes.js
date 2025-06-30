@@ -8,6 +8,7 @@ const { param } = require("express-validator");
 
 const adminController = require("../controllers/adminController");
 const { validateGameId } = require("../controllers/gameController");
+const rankingRoutes = require("./rankingRoutes");
 
 // --- Implementation: Import Ranking Controllers ---
 const {
@@ -87,7 +88,7 @@ router.delete(
 );
 
 // --- Team Power Rankings Routes ---
-router.get("/rankings", getRankings);
+router.get("/rankings", getRankings, rankingRoutes);
 router.post(
   "/rankings",
   validateCreateRanking,
@@ -107,11 +108,6 @@ router.delete(
   handleValidationErrors,
   deleteRanking
 );
-router.post(
-  "/social-campaign",
-  auth,
-  isAdmin,
-  adminController.generateSocialMediaCampaign
-);
+router.post("/social-campaign", auth, isAdmin, adminController.generateSocialMediaCampaign);
 
 module.exports = router;

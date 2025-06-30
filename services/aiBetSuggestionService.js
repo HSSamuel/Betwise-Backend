@@ -1,59 +1,5 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const config = require("../config/env");
-
-if (!config.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY is not defined in the .env file.");
-}
-const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Using Flash to avoid rate-limits during dev.
-
-/**
- * A "bulletproof" function to find and parse a JSON object or array from a string.
- * It handles markdown code blocks and other extraneous text.
- * @param {string} text - The raw text response from the AI.
- * @returns {object|null} The parsed JSON object/array or null if parsing fails.
- */
-function extractJson(text) {
-  if (!text) return null;
-
-  // First, try to find a JSON block wrapped in markdown ```json ... ```
-  const markdownMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-  if (markdownMatch && markdownMatch[1]) {
-    try {
-      return JSON.parse(markdownMatch[1]);
-    } catch (e) {
-      console.error("Failed to parse JSON from markdown block:", e);
-      // Fall through to try the next method
-    }
-  }
-
-  // If no markdown block, find the first '{' or '[' and the last '}' or ']'
-  const firstBracket = text.indexOf("{");
-  const firstSquareBracket = text.indexOf("[");
-  let start = -1;
-
-  if (firstBracket === -1) {
-    start = firstSquareBracket;
-  } else if (firstSquareBracket === -1) {
-    start = firstBracket;
-  } else {
-    start = Math.min(firstBracket, firstSquareBracket);
-  }
-
-  if (start === -1) return null;
-
-  const end = text.lastIndexOf(start === firstBracket ? "}" : "]");
-  if (end === -1) return null;
-
-  const jsonString = text.substring(start, end + 1);
-
-  try {
-    return JSON.parse(jsonString);
-  } catch (e) {
-    console.error("Failed to parse extracted JSON string:", e);
-    return null;
-  }
-}
+const { extractJson } = require("../utils/jsonExtractor");
+const aiProvider = require("./aiProviderService"); // Import the new provider service
 
 /**
  * Generates "smart-bet" combination suggestions.
@@ -75,8 +21,8 @@ async function getCombinationSuggestions(selections) {
   `;
 
   try {
-    const result = await model.generateContent(prompt);
-    const rawText = result.response.text();
+    // FIX: Use the aiProvider service instead of the direct model
+    const rawText = await aiProvider.generateContent(prompt);
     const suggestions = extractJson(rawText);
     return suggestions || [];
   } catch (error) {
@@ -92,6 +38,7 @@ async function getCombinationSuggestions(selections) {
  * @returns {Promise<object|null>} A safer bet alternative or null.
  */
 async function getAlternativeBet(selections, totalOdds) {
+  // If the bet isn't very risky, don't suggest an alternative.
   if (totalOdds < 20) {
     return null;
   }
@@ -107,8 +54,8 @@ async function getAlternativeBet(selections, totalOdds) {
   `;
 
   try {
-    const result = await model.generateContent(prompt);
-    const rawText = result.response.text();
+    // FIX: Use the aiProvider service here as well
+    const rawText = await aiProvider.generateContent(prompt);
     const alternative = extractJson(rawText);
     return alternative;
   } catch (error) {

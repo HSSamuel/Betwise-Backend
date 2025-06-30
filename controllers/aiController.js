@@ -1,5 +1,4 @@
 const axios = require("axios");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { body, validationResult } = require("express-validator");
 const Game = require("../models/Game");
 const Bet = require("../models/Bet");
@@ -7,24 +6,13 @@ const User = require("../models/User");
 const Transaction = require("../models/Transaction");
 const Withdrawal = require("../models/Withdrawal");
 const bettingService = require("../services/bettingService");
-const { fetchNewsForTopic } = require("../services/newsService");
-const { fetchGeneralSportsNews } = require("../services/newsService");
+const {
+  fetchNewsForTopic,
+  fetchGeneralSportsNews,
+} = require("../services/newsService");
 const aiBetSuggestionService = require("../services/aiBetSuggestionService");
-
-// This global variable will hold the initialized AI client.
-let genAI;
-
-try {
-  if (!process.env.GEMINI_API_KEY) {
-    console.error(
-      "GEMINI_API_KEY is not defined. AI features will be disabled."
-    );
-  } else {
-    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  }
-} catch (e) {
-  console.error("Could not initialize GoogleGenerativeAI. Check API Key.", e);
-}
+const aiProvider = require("../services/aiProviderService");
+const { extractJson } = require("../utils/jsonExtractor");
 
 const formatTransactionsForPrompt = (transactions) => {
   if (!transactions || transactions.length === 0)
@@ -62,23 +50,19 @@ const formatBetsForPrompt = (bets) => {
 
 const getLiveScoreUpdate = async (teamName) => {
   if (!teamName) return null;
-
   const teamRegex = new RegExp(teamName, "i");
   const liveGame = await Game.findOne({
     status: "live",
     $or: [{ homeTeam: teamRegex }, { awayTeam: teamRegex }],
   }).lean();
-
   if (liveGame) {
     return `The current score is: ${liveGame.homeTeam} ${liveGame.scores.home} - ${liveGame.scores.away} ${liveGame.awayTeam} (${liveGame.elapsedTime}' elapsed).`;
   }
-
   return null;
 };
 
 const getGameResultInfo = async (teamName) => {
   if (!teamName) return null;
-
   const teamRegex = new RegExp(
     teamName.replace(/game|match/gi, "").trim(),
     "i"
@@ -89,11 +73,9 @@ const getGameResultInfo = async (teamName) => {
   })
     .sort({ matchDate: -1 })
     .lean();
-
   if (finishedGame) {
     return `The last match result for ${teamName} was: ${finishedGame.homeTeam} ${finishedGame.scores.home} - ${finishedGame.scores.away} ${finishedGame.awayTeam}.`;
   }
-
   return `I couldn't find a recent result for a team matching "${teamName}".`;
 };
 
@@ -112,8 +94,6 @@ exports.validateAnalyzeGame = [
 
 exports.handleChat = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
-
     let { message, history = [], context = null } = req.body;
     context = context || {};
     if (!message) {
@@ -122,7 +102,6 @@ exports.handleChat = async (req, res, next) => {
     const user = await User.findById(req.user._id).lean();
     const lowerCaseMessage = message.toLowerCase();
 
-    // 1. Handle bet confirmations first (stateful)
     if (context.conversationState === "confirming_bet") {
       if (
         ["yes", "y", "correct", "ok", "yep", "confirm"].includes(
@@ -149,7 +128,6 @@ exports.handleChat = async (req, res, next) => {
       }
     }
 
-    // 2. Intent: Live Scores
     if (
       lowerCaseMessage.includes("score") ||
       lowerCaseMessage.includes("winning")
@@ -159,7 +137,6 @@ exports.handleChat = async (req, res, next) => {
       if (scoreUpdate) return res.json({ reply: scoreUpdate, context: {} });
     }
 
-    // 3. Intent: Game Results
     if (
       lowerCaseMessage.includes("result") ||
       lowerCaseMessage.includes("who won")
@@ -169,7 +146,6 @@ exports.handleChat = async (req, res, next) => {
       if (resultInfo) return res.json({ reply: resultInfo, context: {} });
     }
 
-    // 4. Intent: General Sports News
     if (
       lowerCaseMessage.includes("news") ||
       lowerCaseMessage.includes("headlines")
@@ -183,7 +159,6 @@ exports.handleChat = async (req, res, next) => {
       }
     }
 
-    // 5. Intent: Parse a bet
     const betIntentResult = await exports.parseBetIntent(
       { body: { text: message } },
       res,
@@ -197,8 +172,6 @@ exports.handleChat = async (req, res, next) => {
       });
     }
 
-    // 6. Fallback: General conversation with user context
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const recentBets = await Bet.find({ user: user._id })
       .sort({ createdAt: -1 })
       .limit(3)
@@ -212,7 +185,6 @@ exports.handleChat = async (req, res, next) => {
     const systemPrompt = `You are "BetWise AI", a helpful assistant for a sports betting app. The user is "${
       user.username
     }". Your role is conversational. You can answer questions about the user's account, find games, provide sports news, and give game results.
-      
         ### LIVE DATA FOR THIS USER (for context only):
         - Wallet Balance: $${user.walletBalance.toFixed(2)}
         - Recent Bets: ${formatBetsForPrompt(recentBets)}
@@ -222,8 +194,7 @@ exports.handleChat = async (req, res, next) => {
         
         Now, respond to the user's message: "${message}"`;
 
-    const result = await model.generateContent(systemPrompt);
-    const rawAiText = result.response.text();
+    const rawAiText = await aiProvider.generateContent(systemPrompt, false);
 
     return res.json({
       reply: rawAiText.replace(/```/g, "").trim(),
@@ -237,34 +208,21 @@ exports.handleChat = async (req, res, next) => {
 
 exports.parseBetIntent = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const { text } = req.body;
     if (!text) {
       return { isBetIntent: false };
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
     const prompt = `From the user's text, extract betting information into a valid JSON object. The JSON must have "stake" (number), and "teamToBetOn" (string).
           Here are some examples:
-          - User text: "I want to put 500 on manchester united to win"
-          - JSON: { "stake": 500, "teamToBetOn": "Manchester United" }
-          - User text: "bet $25 on Real Madrid"
-          - JSON: { "stake": 25, "teamToBetOn": "Real Madrid" }
-          - User text: "Can you place a hundred on chelsea for me"
-          - JSON: { "stake": 100, "teamToBetOn": "Chelsea" }
+          - User text: "I want to put 500 on manchester united to win" -> { "stake": 500, "teamToBetOn": "Manchester United" }
+          - User text: "bet $25 on Real Madrid" -> { "stake": 25, "teamToBetOn": "Real Madrid" }
           Now, analyze this user's text and return only the JSON object: "${text}"`;
 
-    const result = await model.generateContent(prompt);
-    const rawAiText = result.response.text();
+    const rawAiText = await aiProvider.generateContent(prompt);
+    const intent = extractJson(rawAiText);
 
-    const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch || !jsonMatch[0]) {
-      return { isBetIntent: false };
-    }
-
-    const intent = JSON.parse(jsonMatch[0]);
-    if (!intent.stake || !intent.teamToBetOn) {
+    if (!intent || !intent.stake || !intent.teamToBetOn) {
       return { isBetIntent: false };
     }
 
@@ -280,7 +238,6 @@ exports.parseBetIntent = async (req, res, next) => {
         .includes(intent.teamToBetOn.toLowerCase())
         ? "A"
         : "B";
-
       const context = {
         conversationState: "confirming_bet",
         betSlip: {
@@ -290,7 +247,6 @@ exports.parseBetIntent = async (req, res, next) => {
           oddsAtTimeOfBet: game.odds,
         },
       };
-
       return {
         isBetIntent: true,
         reply: `I found a match: ${game.homeTeam} vs ${game.awayTeam}. You want to bet $${intent.stake} on ${intent.teamToBetOn} to win. Is this correct? (yes/no)`,
@@ -309,53 +265,31 @@ exports.parseBetIntent = async (req, res, next) => {
 
 exports.analyzeGame = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
-
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
+    if (!errors.isEmpty())
       return res.status(400).json({ errors: errors.array() });
-    }
 
     const { gameId } = req.body;
     const game = await Game.findById(gameId).lean();
 
-    if (!game) {
-      return res.status(404).json({ msg: "Game not found." });
-    }
-    if (game.status !== "upcoming") {
+    if (!game) return res.status(404).json({ msg: "Game not found." });
+    if (game.status !== "upcoming")
       return res
         .status(400)
         .json({ msg: "AI analysis is only available for upcoming games." });
-    }
 
-    // FIX: Fetch fresh news for both teams to provide real-time context to the AI.
     const homeTeamNews = await fetchNewsForTopic(game.homeTeam);
     const awayTeamNews = await fetchNewsForTopic(game.awayTeam);
+    const context = `News for ${game.homeTeam}: ${
+      homeTeamNews.join("\n") || "No recent news found."
+    }\n\nNews for ${game.awayTeam}: ${
+      awayTeamNews.join("\n") || "No recent news found."
+    }`;
 
-    const context = `
-      News for ${game.homeTeam}:
-      ${homeTeamNews.join("\n") || "No recent news found."}
-      
-      News for ${game.awayTeam}:
-      ${awayTeamNews.join("\n") || "No recent news found."}
-    `;
+    const prompt = `You are a sports betting analyst. Based ONLY on the following news context, provide a brief, neutral, 2-4 sentence analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. Mention recent form, key player status (injuries, transfers), or team morale if found in the text. Do not invent information or predict a winner.\n\nCONTEXT:\n---\n${context}`;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    // FIX: Updated prompt to be more specific and use the fetched news context.
-    const prompt = `
-      You are a sports betting analyst. Based ONLY on the following news context, 
-      provide a brief, neutral, 2-4 sentence analysis for the upcoming match between ${game.homeTeam} and ${game.awayTeam}. 
-      Mention recent form, key player status (injuries, transfers), or team morale if found in the text. 
-      Do not invent information or predict a winner.
-
-      CONTEXT:
-      ---
-      ${context}
-    `;
-
-    const result = await model.generateContent(prompt);
-    res.status(200).json({ analysis: result.response.text().trim() });
+    const analysis = await aiProvider.generateContent(prompt);
+    res.status(200).json({ analysis: analysis.trim() });
   } catch (error) {
     console.error("AI game analysis error:", error);
     next(error);
@@ -364,7 +298,6 @@ exports.analyzeGame = async (req, res, next) => {
 
 exports.getBettingFeedback = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const userId = req.user._id;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const recentBets = await Bet.find({
@@ -382,14 +315,14 @@ exports.getBettingFeedback = async (req, res, next) => {
     const totalStaked = recentBets.reduce((sum, bet) => sum + bet.stake, 0);
     const betCount = recentBets.length;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     const prompt = `You are a caring and non-judgmental responsible gambling assistant. A user named ${
       req.user.username
     } has asked for feedback. Their data for the last 7 days: ${betCount} bets totaling $${totalStaked.toFixed(
       2
     )}. Based on this, provide a short, supportive message. If activity seems high (e.g., >15 bets or >$500), gently suggest considering tools like setting limits. Do not give financial advice. Focus on well-being.`;
-    const result = await model.generateContent(prompt);
-    res.status(200).json({ feedback: result.response.text().trim() });
+
+    const feedback = await aiProvider.generateContent(prompt, false);
+    res.status(200).json({ feedback: feedback.trim() });
   } catch (error) {
     console.error("AI betting feedback error:", error);
     next(error);
@@ -398,7 +331,6 @@ exports.getBettingFeedback = async (req, res, next) => {
 
 exports.generateLimitSuggestion = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const userId = req.user._id;
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
@@ -418,26 +350,12 @@ exports.generateLimitSuggestion = async (req, res, next) => {
     const averageWeeklyStake = (totalStaked / 4.28).toFixed(0);
     const averageWeeklyBetCount = (recentBets.length / 4.28).toFixed(0);
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `
-            You are a caring and supportive responsible gambling assistant for "BetWise".
-            A user named "${req.user.username}" has asked for a weekly limit suggestion.
-            Their average activity over the last 30 days is:
-            - Average weekly bet count: ~${averageWeeklyBetCount} bets
-            - Average weekly amount staked: ~$${averageWeeklyStake}
-  
-            Your task is to generate a short, helpful, and non-judgmental message suggesting weekly limits based on their average activity.
-            - Suggest a bet count limit slightly above their average (e.g., average + 5).
-            - Suggest a stake amount limit slightly above their average (e.g., average + 25%).
-            - Frame it as a helpful tool for staying in control.
-            - Do NOT be alarming or give financial advice.
-        `;
+    const prompt = `You are a caring and supportive responsible gambling assistant for "BetWise". A user named "${req.user.username}" has asked for a weekly limit suggestion. Their average activity over the last 30 days is: ~${averageWeeklyBetCount} bets/week and ~$${averageWeeklyStake}/week. Generate a short, helpful, and non-judgmental message suggesting weekly limits based on their average activity. Suggest a bet count limit slightly above their average (e.g., average + 5) and a stake amount limit slightly above their average (e.g., average + 25%). Frame it as a helpful tool for staying in control. Do NOT be alarming or give financial advice.`;
 
-    const result = await model.generateContent(prompt);
-    const suggestionText = result.response.text().trim();
+    const suggestionText = await aiProvider.generateContent(prompt, false);
 
     res.status(200).json({
-      suggestion: suggestionText,
+      suggestion: suggestionText.trim(),
       suggestedLimits: {
         betCount: Math.ceil(averageWeeklyBetCount / 5) * 5 + 5,
         stakeAmount: Math.ceil((averageWeeklyStake * 1.25) / 10) * 10,
@@ -451,7 +369,6 @@ exports.generateLimitSuggestion = async (req, res, next) => {
 
 exports.searchGamesWithAI = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const { query } = req.body;
     if (!query) {
       const err = new Error("A search query is required.");
@@ -459,35 +376,13 @@ exports.searchGamesWithAI = async (req, res, next) => {
       return next(err);
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    const prompt = `You are an intelligent search assistant for a betting app. Analyze the user's search query: "${query}". Your task is to return a JSON object with any of the following keys you can identify: 'team', 'league', or 'date'. - For 'team', extract the full team name. - For 'league', extract the league name. - For 'date', extract only one of the keywords: "today", "tomorrow", or an "YYYY-MM-DD" formatted date if specified. - If you cannot identify a parameter, omit its key. Examples: - "Real Madrid games" -> {"team": "Real Madrid"} - "Show me premier league matches today" -> {"league": "Premier League", "date": "today"} Return ONLY the JSON object.`;
 
-    const prompt = `
-        You are an intelligent search assistant for a betting app.
-        Analyze the user's search query: "${query}"
-        Your task is to return a JSON object with any of the following keys you can identify: 'team', 'league', or 'date'.
-        - For 'team', extract the full team name.
-        - For 'league', extract the league name.
-        - For 'date', extract only one of the keywords: "today", "tomorrow", or an "YYYY-MM-DD" formatted date if specified.
-        - If you cannot identify a parameter, omit its key from the JSON object.
-  
-        Examples:
-        - Query: "Real Madrid games" -> {"team": "Real Madrid"}
-        - Query: "Show me premier league matches today" -> {"league": "Premier League", "date": "today"}
-        - Query: "who is barcelona playing on 2025-06-25" -> {"team": "Barcelona", "date": "2025-06-25"}
-        - Query: "tomorrow's games" -> {"date": "tomorrow"}
-  
-        Return ONLY the JSON object.
-      `;
+    const rawAiText = await aiProvider.generateContent(prompt);
+    const params = extractJson(rawAiText);
 
-    const result = await model.generateContent(prompt);
-    const rawAiText = result.response.text();
-    const jsonMatch = rawAiText.match(/\{[\s\S]*\}/);
+    if (!params) throw new Error("AI could not process the search query.");
 
-    if (!jsonMatch || !jsonMatch[0]) {
-      throw new Error("AI could not process the search query.");
-    }
-
-    const params = JSON.parse(jsonMatch[0]);
     const filter = { status: "upcoming" };
 
     if (params.team) {
@@ -500,14 +395,11 @@ exports.searchGamesWithAI = async (req, res, next) => {
 
     if (params.date) {
       let targetDate;
-      if (params.date === "today") {
-        targetDate = new Date();
-      } else if (params.date === "tomorrow") {
+      if (params.date === "today") targetDate = new Date();
+      else if (params.date === "tomorrow") {
         targetDate = new Date();
         targetDate.setDate(targetDate.getDate() + 1);
-      } else {
-        targetDate = new Date(params.date);
-      }
+      } else targetDate = new Date(params.date);
 
       if (!isNaN(targetDate.getTime())) {
         const startDate = new Date(targetDate.setHours(0, 0, 0, 0));
@@ -529,52 +421,19 @@ exports.searchGamesWithAI = async (req, res, next) => {
 
 exports.getNewsSummary = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized. Check API Key.");
     const { topic } = req.body;
-    const apiKey = process.env.GOOGLE_API_KEY;
-    const cseId = process.env.GOOGLE_CSE_ID;
-
-    // FIX: Throw a more specific error if keys are missing
-    if (!apiKey || !cseId) {
-      const err = new Error(
-        "Google Search API Key or CSE ID is not configured on the server."
-      );
-      err.statusCode = 501; // 501 Not Implemented
-      return next(err);
-    }
-
-    const searchUrl = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cseId}&q=${encodeURIComponent(
-      topic + " football news"
-    )}`;
-
-    const searchResponse = await axios.get(searchUrl);
-
-    if (!searchResponse.data.items || searchResponse.data.items.length === 0) {
+    const newsSnippets = await fetchNewsForTopic(topic);
+    if (newsSnippets.length === 0) {
       return res.status(404).json({
         summary: `Sorry, I couldn't find any recent news for "${topic}".`,
       });
     }
 
-    const context = searchResponse.data.items
-      .map((item) => item.snippet)
-      .join("\n\n");
+    const context = newsSnippets.join("\n\n");
+    const prompt = `You are a sports news analyst. Based only on the following context, provide a brief, neutral, 2-4 sentence summary about "${topic}". Mention recent form, injuries, or significant transfer news found in the text. Do not invent information.\n\nCONTEXT:\n---\n${context}`;
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `
-        You are a sports news analyst for the BetWise app.
-        Based only on the following context, provide a brief, neutral, 2-4 sentence summary about "${topic}".
-        Mention recent form, injuries, or significant transfer news found in the text.
-        Do not invent information.
-  
-        CONTEXT:
-        ---
-        ${context}
-      `;
-
-    const result = await model.generateContent(prompt);
-    const summaryText = result.response.text().trim();
-
-    res.status(200).json({ summary: summaryText });
+    const summaryText = await aiProvider.generateContent(prompt);
+    res.status(200).json({ summary: summaryText.trim() });
   } catch (error) {
     next(error);
   }
@@ -595,7 +454,6 @@ exports.getRecommendedGames = async (req, res, next) => {
       { $match: { status: "upcoming", isDeleted: { $ne: true } } },
       { $sample: { size: 2 } },
     ]);
-
     res.status(200).json({
       message: "Successfully fetched random game suggestions.",
       games: randomGames,
@@ -606,49 +464,31 @@ exports.getRecommendedGames = async (req, res, next) => {
   }
 };
 
-// --- Generate Social Media Post ---
 exports.generateSocialPost = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized.");
-
     const { gameId } = req.body;
     if (!gameId) {
       const err = new Error("A gameId is required.");
       err.statusCode = 400;
       return next(err);
     }
-
     const game = await Game.findById(gameId).lean();
     if (!game) {
       const err = new Error("Game not found.");
       err.statusCode = 404;
       return next(err);
     }
-
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `
-      You are a social media manager for a sports betting app called "BetWise". 
-      Your tone is exciting and engaging.
-      Create a short social media post for the upcoming match: "${game.homeTeam} vs. ${game.awayTeam}" in the "${game.league}".
-      The post should build hype for the match and end with a call to action to place bets on BetWise.
-      Include 3-4 relevant hashtags.
-    `;
-
-    const result = await model.generateContent(prompt);
-    const post = result.response.text().trim();
-
-    res.status(200).json({ post });
+    const prompt = `You are a social media manager for a sports betting app called "BetWise". Your tone is exciting and engaging. Create a short social media post for the upcoming match: "${game.homeTeam} vs. ${game.awayTeam}" in the "${game.league}". The post should build hype and end with a call to action to place bets on BetWise. Include 3-4 relevant hashtags.`;
+    const post = await aiProvider.generateContent(prompt);
+    res.status(200).json({ post: post.trim() });
   } catch (error) {
     next(error);
   }
 };
 
-// --- Analyze Bet Slip ---
 exports.analyzeBetSlip = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized.");
     const { selections } = req.body;
-
     if (!Array.isArray(selections) || selections.length < 2) {
       const err = new Error(
         "At least two selections are required for analysis."
@@ -657,38 +497,25 @@ exports.analyzeBetSlip = async (req, res, next) => {
       return next(err);
     }
 
-    // --- Calculations for AI Context ---
     const totalOdds = selections.reduce((acc, s) => acc * s.odds, 1);
     const impliedProbability = (1 / totalOdds) * 100;
     const riskiestLeg = selections.reduce((riskiest, current) =>
       current.odds > riskiest.odds ? current : riskiest
     );
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const prompt = `
-      You are a sports betting analyst providing a risk summary for a multi-bet slip on the "BetWise" app.
-      The user's slip has ${
-        selections.length
-      } selections with total odds of ${totalOdds.toFixed(2)}.
-
-      - The implied probability of this bet winning is approximately ${impliedProbability.toFixed(
-        2
-      )}%.
-      - The single riskiest leg in this bet is "${
-        riskiestLeg.gameDetails.homeTeam
-      } vs ${riskiestLeg.gameDetails.awayTeam}" with odds of ${
+    const prompt = `You are a sports betting analyst providing a risk summary for a multi-bet slip. The user's slip has ${
+      selections.length
+    } selections with total odds of ${totalOdds.toFixed(
+      2
+    )}. The implied probability is ~${impliedProbability.toFixed(
+      2
+    )}%. The single riskiest leg is "${riskiestLeg.gameDetails.homeTeam} vs ${
+      riskiestLeg.gameDetails.awayTeam
+    }" with odds of ${
       riskiestLeg.odds
-    }.
+    }. Based on this data, provide a concise, 2-3 sentence analysis. Classify the risk level (e.g., "This is a high-risk, high-reward bet..."), mention the low probability, and point out the riskiest leg as a key factor. Be direct and analytical.`;
 
-      Based on this data, provide a concise, 2-3 sentence analysis for the user. 
-      Start by classifying the bet's risk level (e.g., "This is a high-risk, high-reward bet...").
-      Mention the low probability and point out the riskiest leg as a key factor.
-      Do not add any conversational fluff. Be direct and analytical.
-    `;
-
-    const result = await model.generateContent(prompt);
-    const analysis = result.response.text().trim();
-
+    const analysis = await aiProvider.generateContent(prompt, true);
     res.status(200).json({ analysis });
   } catch (error) {
     next(error);
@@ -698,16 +525,11 @@ exports.analyzeBetSlip = async (req, res, next) => {
 exports.getBetSlipSuggestions = async (req, res, next) => {
   try {
     const { selections, totalOdds } = req.body;
-
     const [combinationSuggestions, alternativeBet] = await Promise.all([
       aiBetSuggestionService.getCombinationSuggestions(selections),
       aiBetSuggestionService.getAlternativeBet(selections, totalOdds),
     ]);
-
-    res.status(200).json({
-      combinationSuggestions,
-      alternativeBet,
-    });
+    res.status(200).json({ combinationSuggestions, alternativeBet });
   } catch (error) {
     next(error);
   }
@@ -715,7 +537,6 @@ exports.getBetSlipSuggestions = async (req, res, next) => {
 
 exports.getPersonalizedNewsFeed = async (req, res, next) => {
   try {
-    // 1. Get all bets for the user and populate the game data for each selection
     const userBets = await Bet.find({ user: req.user._id })
       .populate({
         path: "selections.game",
@@ -728,11 +549,9 @@ exports.getPersonalizedNewsFeed = async (req, res, next) => {
       return res.status(200).json({ news: [] });
     }
 
-    // 2. Use JavaScript to count the occurrences of each team
     const teamCounts = {};
     userBets.forEach((bet) => {
       bet.selections.forEach((selection) => {
-        // Ensure the game data exists before trying to access it
         if (
           selection.game &&
           selection.game.homeTeam &&
@@ -746,34 +565,32 @@ exports.getPersonalizedNewsFeed = async (req, res, next) => {
       });
     });
 
-    // 3. Sort the teams by frequency and get the top 3
     const sortedTeams = Object.entries(teamCounts)
       .sort(([, a], [, b]) => b - a)
-      .slice(0, 3)
+      .slice(0, 1)
       .map(([team]) => team);
 
-    const teamNames = sortedTeams.filter(Boolean); // Filter out any null/undefined team names
+    const teamNames = sortedTeams.filter(Boolean);
 
     if (teamNames.length === 0) {
       return res.status(200).json({ news: [] });
     }
 
-    // 4. Fetch news for the top teams
-    const newsPromises = teamNames.map((team) => fetchNewsForTopic(team));
-    const newsResults = await Promise.all(newsPromises);
+    const newsPromises = teamNames.map(async (team) => {
+      // fetchNewsForTopic will return an array of snippets
+      const snippets = await fetchNewsForTopic(team);
+      // FIX: Join the snippets into a single string with newlines
+      const summary = snippets
+        ? snippets.join("\n\n")
+        : "No recent news found.";
+      return { team, summary };
+    });
 
-    const news = teamNames.map((team, index) => ({
-      team,
-      summary: newsResults[index]
-        ? newsResults[index].join(" ")
-        : "No recent news found.",
-    }));
+    const news = await Promise.all(newsPromises);
 
     res.status(200).json({ news });
   } catch (error) {
-    // Add detailed logging on the backend for debugging
     console.error("ERROR in getPersonalizedNewsFeed:", error);
-    // Pass the error to the centralized error handler
     next(error);
   }
 };

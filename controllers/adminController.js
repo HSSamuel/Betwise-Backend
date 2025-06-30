@@ -6,17 +6,12 @@ const Withdrawal = require("../models/Withdrawal");
 const { query, body, param, validationResult } = require("express-validator");
 const mongoose = require("mongoose");
 const { syncGames } = require("../services/sportsDataService");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-const config = require("../config/env"); // <-- IMPORT the new config
+const config = require("../config/env");
 const Notification = require("../models/Notification");
 const { extractJson } = require("../utils/jsonExtractor");
+const aiProvider = require("../services/aiProviderService"); // Using our centralized AI provider
 
-// Initialize Gemini AI
-if (!config.GEMINI_API_KEY) {
-  // <-- USE config
-  throw new Error("GEMINI_API_KEY is not defined in the .env file.");
-}
-const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY); // <-- USE config
+// Note: The direct 'genAI' initialization is no longer needed here.
 
 // Admin: Get basic platform statistics
 exports.getPlatformStats = async (req, res, next) => {
@@ -25,7 +20,7 @@ exports.getPlatformStats = async (req, res, next) => {
     const betCount = await Bet.countDocuments();
     const gameCount = await Game.countDocuments({
       status: { $ne: "cancelled" },
-    }); // Active games
+    });
     const pendingGames = await Game.countDocuments({ status: "upcoming" });
     const totalTransactions = await Transaction.countDocuments();
 
@@ -107,7 +102,6 @@ exports.getFinancialDashboard = async (req, res, next) => {
       dashboardStats.totalStakes.amount -
       dashboardStats.totalPayoutsToUsers.amount;
 
-    // Format all amounts to 2 decimal places
     for (const key in dashboardStats) {
       if (dashboardStats[key].hasOwnProperty("amount")) {
         dashboardStats[key].amount = parseFloat(
@@ -122,7 +116,7 @@ exports.getFinancialDashboard = async (req, res, next) => {
   }
 };
 
-// --- Validation rules ---
+// --- Validation rules (no changes here) ---
 exports.validateListUsers = [
   query("page")
     .optional()
@@ -185,7 +179,7 @@ exports.validateProcessWithdrawal = [
     .withMessage('Status must be either "approved" or "rejected".'),
 ];
 
-// --- Controller functions ---
+// --- Controller functions (no changes to user-related admin functions) ---
 exports.listUsers = async (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -219,7 +213,6 @@ exports.listUsers = async (req, res, next) => {
 
     const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
 
-    // Perform two separate queries: one for admins, one for users
     const admins = await User.find({ ...filter, role: "admin" })
       .select("-password")
       .sort(sortOptions)
@@ -229,7 +222,6 @@ exports.listUsers = async (req, res, next) => {
       .sort(sortOptions)
       .lean();
 
-    // Combine the results, with admins always first
     const allUsers = [...admins, ...users];
 
     const totalUsers = allUsers.length;
@@ -270,7 +262,6 @@ exports.getAllUsersFullDetails = async (req, res, next) => {
   }
 };
 
-// --- Corrected adminGetUserDetail Function ---
 exports.adminGetUserDetail = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -292,7 +283,6 @@ exports.adminGetUserDetail = async (req, res, next) => {
       return next(err);
     }
 
-    // --- Correction: Build dynamic filters and sort options ---
     const transactionFilter = { user: userId };
     if (txType) transactionFilter.type = txType;
     if (startDate && endDate)
@@ -312,10 +302,7 @@ exports.adminGetUserDetail = async (req, res, next) => {
     const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
 
     const [transactions, bets] = await Promise.all([
-      Transaction.find(transactionFilter)
-        .sort(sortOptions)
-        .limit(100)
-        .lean(),
+      Transaction.find(transactionFilter).sort(sortOptions).limit(100).lean(),
       Bet.find(betFilter)
         .sort(sortOptions)
         .limit(100)
@@ -412,7 +399,6 @@ exports.adminDeleteUser = async (req, res, next) => {
   }
 };
 
-// --- Corrected adminDeleteGame Function ---
 exports.adminDeleteGame = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -449,7 +435,6 @@ exports.adminGetWithdrawals = async (req, res, next) => {
   }
 };
 
-// --- Corrected adminProcessWithdrawal Function ---
 exports.adminProcessWithdrawal = async (req, res, next) => {
   const { status, adminNotes } = req.body;
   const { id } = req.params;
@@ -470,20 +455,28 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
     withdrawalRequest.processedAt = new Date();
 
     if (status === "approved") {
-        const user = withdrawalRequest.user;
-        if (user.walletBalance < withdrawalRequest.amount) throw new Error("User no longer has sufficient funds for this withdrawal.");
-        user.walletBalance -= withdrawalRequest.amount;
-        await new Transaction({
-            user: user._id, type: "withdrawal", amount: -withdrawalRequest.amount, balanceAfter: user.walletBalance, description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
-        }).save({ session });
-        await user.save({ session });
+      const user = withdrawalRequest.user;
+      if (user.walletBalance < withdrawalRequest.amount)
+        throw new Error(
+          "User no longer has sufficient funds for this withdrawal."
+        );
+      user.walletBalance -= withdrawalRequest.amount;
+      await new Transaction({
+        user: user._id,
+        type: "withdrawal",
+        amount: -withdrawalRequest.amount,
+        balanceAfter: user.walletBalance,
+        description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
+      }).save({ session });
+      await user.save({ session });
     }
     await withdrawalRequest.save({ session });
     await session.commitTransaction();
-    
-    // --- Correction: Define variables and use them for both notification types ---
+
     const notificationType = `withdrawal_${withdrawalRequest.status}`;
-    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(2)} has been ${withdrawalRequest.status}.`;
+    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(
+      2
+    )} has been ${withdrawalRequest.status}.`;
 
     try {
       await sendEmail({
@@ -497,18 +490,20 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
         emailError
       );
     }
-    
+
     await new Notification({
       user: withdrawalRequest.user._id,
       message: notificationMessage,
       type: notificationType,
       link: "/wallet",
-    }).save(); // Can be saved outside the session
+    }).save();
 
-    req.io.to(withdrawalRequest.user._id.toString()).emit("withdrawal_processed", {
+    req.io
+      .to(withdrawalRequest.user._id.toString())
+      .emit("withdrawal_processed", {
         status: withdrawalRequest.status,
         message: notificationMessage,
-    });
+      });
 
     res.status(200).json({
       msg: `Withdrawal request has been ${status}.`,
@@ -522,11 +517,9 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
   }
 };
 
-// This function has access to syncGames.
 exports.manualGameSync = async (req, res, next) => {
   const { source = "apifootball" } = req.body;
   try {
-    // FIX: Call the correctly named 'syncGames' function
     await syncGames(source);
     res.status(200).json({
       msg: `Synchronization from '${source}' has been successfully triggered.`,
@@ -536,30 +529,26 @@ exports.manualGameSync = async (req, res, next) => {
   }
 };
 
-// --- FUNCTION for Platform Risk Analysis ---
 exports.getGameRiskAnalysis = async (req, res, next) => {
   try {
     const { id: gameId } = req.params;
 
-    // FIX: The risk pipeline now includes a $project stage to calculate potentialPayout
     const riskPipeline = [
       { $match: { "selections.game": new mongoose.Types.ObjectId(gameId) } },
-      { $unwind: "$selections" }, // Deconstruct the selections array to process each one
-      { $match: { "selections.game": new mongoose.Types.ObjectId(gameId) } }, // Match again after unwind
+      { $unwind: "$selections" },
+      { $match: { "selections.game": new mongoose.Types.ObjectId(gameId) } },
       {
         $project: {
           stake: 1,
           outcome: "$selections.outcome",
           odds: "$selections.odds",
-          // Dynamically calculate the potential payout for each bet
           potentialPayout: { $multiply: ["$stake", "$selections.odds"] },
         },
       },
       {
         $group: {
-          _id: "$outcome", // Group by the outcome (A, B, Draw)
+          _id: "$outcome",
           totalStake: { $sum: "$stake" },
-          // Now we can sum the calculated potentialPayout
           totalPotentialPayout: { $sum: "$potentialPayout" },
           betCount: { $sum: 1 },
         },
@@ -568,7 +557,7 @@ exports.getGameRiskAnalysis = async (req, res, next) => {
     ];
 
     const riskAnalysis = await Bet.aggregate(riskPipeline);
-    const game = await Game.findById(gameId).lean(); // Fetch game details
+    const game = await Game.findById(gameId).lean();
 
     const formattedResponse = {
       gameId,
@@ -606,12 +595,10 @@ exports.getGameRiskAnalysis = async (req, res, next) => {
       analysis: formattedResponse,
     });
   } catch (error) {
-    // Pass the error to the centralized error handler
     next(error);
   }
 };
 
-// --- FUNCTION for AI-Powered Risk Summary ---
 exports.getGameRiskSummary = async (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -620,45 +607,22 @@ exports.getGameRiskSummary = async (req, res, next) => {
   try {
     const { id: gameId } = req.params;
 
-    // Step 1: Get the raw numerical risk analysis data.
-    // We can reuse the aggregation pipeline logic.
     const riskPipeline = [
       {
         $match: {
-          game: new mongoose.Types.ObjectId(gameId),
+          "selections.game": new mongoose.Types.ObjectId(gameId),
           status: "pending",
         },
       },
-      {
-        $project: {
-          stake: 1,
-          outcome: 1,
-          potentialPayout: {
-            $switch: {
-              branches: [
-                {
-                  case: { $eq: ["$outcome", "A"] },
-                  then: { $multiply: ["$stake", "$oddsAtTimeOfBet.home"] },
-                },
-                {
-                  case: { $eq: ["$outcome", "B"] },
-                  then: { $multiply: ["$stake", "$oddsAtTimeOfBet.away"] },
-                },
-                {
-                  case: { $eq: ["$outcome", "Draw"] },
-                  then: { $multiply: ["$stake", "$oddsAtTimeOfBet.draw"] },
-                },
-              ],
-              default: 0,
-            },
-          },
-        },
-      },
+      { $unwind: "$selections" },
+      { $match: { "selections.game": new mongoose.Types.ObjectId(gameId) } },
       {
         $group: {
-          _id: "$outcome",
+          _id: "$selections.outcome",
           totalStake: { $sum: "$stake" },
-          totalPotentialPayout: { $sum: "$potentialPayout" },
+          totalPotentialPayout: {
+            $sum: { $multiply: ["$stake", "$selections.odds"] },
+          },
           betCount: { $sum: 1 },
         },
       },
@@ -670,7 +634,6 @@ exports.getGameRiskSummary = async (req, res, next) => {
       return res.status(404).json({ message: "Game not found." });
     }
 
-    // Step 2: Prepare a prompt for the AI with the data.
     const prompt = `
     You are a senior risk analyst for a sports betting company.
     Analyze the following betting data for the upcoming match: "${
@@ -678,58 +641,51 @@ exports.getGameRiskSummary = async (req, res, next) => {
     } vs. ${
       game.awayTeam
     }" and provide a concise, 1-2 paragraph risk summary for a non-technical admin.
-
     Your summary should:
     - Start with a clear "Overall Risk Assessment:" (e.g., Low, Moderate, High).
     - Identify which outcome (Home Win, Away Win, Draw) has the highest financial exposure (potential payout).
     - Mention the total amount staked on that outcome and the number of bets.
     - Conclude with a clear recommendation, such as "No action needed," "Monitor closely," or "Immediate review of betting patterns is recommended."
-
     Here is the data:
     ${JSON.stringify(riskAnalysis, null, 2)}
-  `;
+    `;
 
-    // Step 3: Call the AI model and send the response.
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-    const result = await model.generateContent(prompt);
-    const summary = result.response.text();
+    const summary = await aiProvider.generateContent(prompt, false); // No caching for real-time risk
 
     res.status(200).json({
       message: "AI-powered risk summary for game.",
       summary: summary.trim(),
-      rawData: riskAnalysis, // Also return the raw data for context
+      rawData: riskAnalysis,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// FIX: New controller function to get a high-level risk overview.
 exports.getRiskOverview = async (req, res, next) => {
   try {
-    const RISK_THRESHOLD = config.PLATFORM_RISK_THRESHOLD; // <-- USE config
+    const RISK_THRESHOLD = config.PLATFORM_RISK_THRESHOLD;
 
-    // Aggregation pipeline to calculate total potential payout per game
     const riskPipeline = [
-      { $match: { status: "pending" } }, // Only consider pending bets
+      { $match: { status: "pending" } },
       {
         $group: {
-          _id: "$game", // Group bets by game
+          _id: "$selections.game",
           totalPotentialPayout: { $sum: "$payout" },
         },
       },
+      { $unwind: "$_id" },
       {
         $lookup: {
-          // Join with the games collection to get game details
           from: "games",
           localField: "_id",
           foreignField: "_id",
           as: "gameDetails",
         },
       },
-      { $unwind: "$gameDetails" }, // Deconstruct the gameDetails array
-      { $match: { "gameDetails.status": "upcoming" } }, // Ensure the game is upcoming
-      { $sort: { totalPotentialPayout: -1 } }, // Sort by the highest risk
+      { $unwind: "$gameDetails" },
+      { $match: { "gameDetails.status": "upcoming" } },
+      { $sort: { totalPotentialPayout: -1 } },
     ];
 
     const allGameRisks = await Bet.aggregate(riskPipeline);
@@ -741,7 +697,7 @@ exports.getRiskOverview = async (req, res, next) => {
     const highRiskGamesCount = allGameRisks.filter(
       (game) => game.totalPotentialPayout > RISK_THRESHOLD
     ).length;
-    const topExposedGames = allGameRisks.slice(0, 5); // Get the top 5 riskiest games
+    const topExposedGames = allGameRisks.slice(0, 5);
 
     res.status(200).json({
       totalExposure,
@@ -755,8 +711,6 @@ exports.getRiskOverview = async (req, res, next) => {
 
 exports.generateSocialMediaCampaign = async (req, res, next) => {
   try {
-    if (!genAI) throw new Error("AI Service not initialized.");
-
     const { league, dateRange } = req.body;
     const startDate = new Date(new Date(dateRange).setHours(0, 0, 0, 0));
     const endDate = new Date(new Date(dateRange).setHours(23, 59, 59, 999));
@@ -768,14 +722,11 @@ exports.generateSocialMediaCampaign = async (req, res, next) => {
     }).limit(5);
 
     if (games.length === 0) {
-      return res
-        .status(404)
-        .json({
-          msg: "No upcoming games found for the specified league and date.",
-        });
+      return res.status(404).json({
+        msg: "No upcoming games found for the specified league and date.",
+      });
     }
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Using Flash to avoid rate limits
     const prompt = `
       You are a social media manager for a sports betting app called "BetWise". 
       Your tone is exciting and engaging.
@@ -791,10 +742,7 @@ exports.generateSocialMediaCampaign = async (req, res, next) => {
         .join("\n")}
     `;
 
-    const result = await model.generateContent(prompt);
-    const rawText = result.response.text();
-
-    // Use the robust extractor function here
+    const rawText = await aiProvider.generateContent(prompt, true); // Use caching for this
     const campaign = extractJson(rawText);
 
     if (!campaign) {
