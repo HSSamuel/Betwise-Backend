@@ -1,5 +1,3 @@
-// In: services/emailService.js
-
 const nodemailer = require("nodemailer");
 const config = require("../config/env"); // <-- IMPORT the new config
 
