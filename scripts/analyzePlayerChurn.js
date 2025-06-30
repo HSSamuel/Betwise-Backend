@@ -81,4 +81,5 @@ async function analyzePlayerChurn() {
   }
 }
 
+// REMOVED logic that connected/disconnected the database.
 module.exports = { analyzePlayerChurn };

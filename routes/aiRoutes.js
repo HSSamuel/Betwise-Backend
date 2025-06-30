@@ -46,6 +46,4 @@ router.post("/slip-suggestions", auth, aiController.getBetSlipSuggestions);
 
 router.get("/personalized-news", auth, aiController.getPersonalizedNewsFeed);
 
-router.post("/search-games", aiController.searchGamesAI);
-
 module.exports = router;

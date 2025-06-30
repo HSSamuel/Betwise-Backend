@@ -41,6 +41,7 @@ exports.getPlatformStats = async (req, res, next) => {
   }
 };
 
+// Admin: Get financial dashboard
 exports.getFinancialDashboard = async (req, res, next) => {
   try {
     const financialData = await Transaction.aggregate([
@@ -269,6 +270,7 @@ exports.getAllUsersFullDetails = async (req, res, next) => {
   }
 };
 
+// --- Corrected adminGetUserDetail Function ---
 exports.adminGetUserDetail = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -282,11 +284,7 @@ exports.adminGetUserDetail = async (req, res, next) => {
     } = req.query;
 
     const userId = new mongoose.Types.ObjectId(id);
-
-    // ** CORRECTION HERE **
-    // The query is now simplified. We remove the .select() projection entirely.
-    // Mongoose will automatically exclude the password due to the 'select: false' option in the User model.
-    const user = await User.findById(userId).lean();
+    const user = await User.findById(userId).select("-password").lean();
 
     if (!user) {
       const err = new Error("User not found.");
@@ -294,13 +292,7 @@ exports.adminGetUserDetail = async (req, res, next) => {
       return next(err);
     }
 
-    // ** NEW FALLBACK LOGIC **
-    // This ensures that even for old users who have never logged in since the feature was added,
-    // we show their join date as their "last seen" time.
-    if (!user.lastLogin) {
-      user.lastLogin = user.createdAt;
-    }
-
+    // --- Correction: Build dynamic filters and sort options ---
     const transactionFilter = { user: userId };
     if (txType) transactionFilter.type = txType;
     if (startDate && endDate)
@@ -320,7 +312,10 @@ exports.adminGetUserDetail = async (req, res, next) => {
     const sortOptions = { [sortBy]: order === "asc" ? 1 : -1 };
 
     const [transactions, bets] = await Promise.all([
-      Transaction.find(transactionFilter).sort(sortOptions).limit(100).lean(),
+      Transaction.find(transactionFilter)
+        .sort(sortOptions)
+        .limit(100)
+        .lean(),
       Bet.find(betFilter)
         .sort(sortOptions)
         .limit(100)
@@ -475,29 +470,20 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
     withdrawalRequest.processedAt = new Date();
 
     if (status === "approved") {
-      const user = withdrawalRequest.user;
-      if (user.walletBalance < withdrawalRequest.amount)
-        throw new Error(
-          "User no longer has sufficient funds for this withdrawal."
-        );
-      user.walletBalance -= withdrawalRequest.amount;
-      await new Transaction({
-        user: user._id,
-        type: "withdrawal",
-        amount: -withdrawalRequest.amount,
-        balanceAfter: user.walletBalance,
-        description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
-      }).save({ session });
-      await user.save({ session });
+        const user = withdrawalRequest.user;
+        if (user.walletBalance < withdrawalRequest.amount) throw new Error("User no longer has sufficient funds for this withdrawal.");
+        user.walletBalance -= withdrawalRequest.amount;
+        await new Transaction({
+            user: user._id, type: "withdrawal", amount: -withdrawalRequest.amount, balanceAfter: user.walletBalance, description: `Withdrawal of ${withdrawalRequest.amount} approved.`,
+        }).save({ session });
+        await user.save({ session });
     }
     await withdrawalRequest.save({ session });
     await session.commitTransaction();
-
+    
     // --- Correction: Define variables and use them for both notification types ---
     const notificationType = `withdrawal_${withdrawalRequest.status}`;
-    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(
-      2
-    )} has been ${withdrawalRequest.status}.`;
+    const notificationMessage = `Your withdrawal request for $${withdrawalRequest.amount.toFixed(2)} has been ${withdrawalRequest.status}.`;
 
     try {
       await sendEmail({
@@ -511,7 +497,7 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
         emailError
       );
     }
-
+    
     await new Notification({
       user: withdrawalRequest.user._id,
       message: notificationMessage,
@@ -519,12 +505,10 @@ exports.adminProcessWithdrawal = async (req, res, next) => {
       link: "/wallet",
     }).save(); // Can be saved outside the session
 
-    req.io
-      .to(withdrawalRequest.user._id.toString())
-      .emit("withdrawal_processed", {
+    req.io.to(withdrawalRequest.user._id.toString()).emit("withdrawal_processed", {
         status: withdrawalRequest.status,
         message: notificationMessage,
-      });
+    });
 
     res.status(200).json({
       msg: `Withdrawal request has been ${status}.`,
@@ -784,9 +768,11 @@ exports.generateSocialMediaCampaign = async (req, res, next) => {
     }).limit(5);
 
     if (games.length === 0) {
-      return res.status(404).json({
-        msg: "No upcoming games found for the specified league and date.",
-      });
+      return res
+        .status(404)
+        .json({
+          msg: "No upcoming games found for the specified league and date.",
+        });
     }
 
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Using Flash to avoid rate limits

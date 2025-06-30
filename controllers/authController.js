@@ -7,7 +7,7 @@ const TokenBlacklist = require("../models/TokenBlacklist");
 const { sendEmail } = require("../services/emailService");
 const config = require("../config/env");
 
-// --- Helper Functions (remain the same) ---
+// --- Helper Functions ---
 const generateAccessToken = (user) => {
   const payload = { id: user._id, role: user.role, username: user.username };
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
@@ -18,10 +18,7 @@ const generateRefreshToken = (user) => {
   return jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: "7d" });
 };
 
-
-// --- Controller Functions ---
-
-// ... (validateRegister and register function remain the same) ...
+// --- Validation Rules ---
 exports.validateRegister = [
   body("username")
     .trim()
@@ -71,12 +68,11 @@ exports.validateResetPassword = [
   }),
 ];
 
-// ** FIX IS HERE **
+// --- Controller Functions ---
+
 exports.getMe = async (req, res, next) => {
   try {
-    // The explicit '-password' exclusion has been removed.
-    // The schema's 'select: false' option for the password field will handle this automatically.
-    const user = await User.findById(req.user._id); 
+    const user = await User.findById(req.user._id).select("-password");
     if (!user) {
       return res.status(404).json({ msg: "User not found." });
     }
@@ -85,7 +81,6 @@ exports.getMe = async (req, res, next) => {
     next(error);
   }
 };
-
 
 exports.register = async (req, res, next) => {
   const errors = validationResult(req);
@@ -163,7 +158,7 @@ exports.register = async (req, res, next) => {
   }
 };
 
-
+// --- MODIFIED LOGIN FUNCTION ---
 exports.login = async (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -195,10 +190,6 @@ exports.login = async (req, res, next) => {
       err.statusCode = 401;
       return next(err);
     }
-    
-    // ** UPDATE LAST LOGIN TIME **
-    user.lastLogin = new Date();
-    await user.save({ validateBeforeSave: false }); // Save without running all validators
 
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
@@ -262,34 +253,35 @@ exports.refreshToken = async (req, res, next) => {
   }
 };
 
+// --- FIX: Corrected Social Login Callback with your URL ---
 exports.socialLoginCallback = async (req, res, next) => {
   try {
     const user = req.user;
     if (!user) {
+      // If authentication fails, redirect to the frontend login page with an error
       return res
         .status(401)
         .redirect(
-          `${config.FRONTEND_URL}/login?error=auth_failed`
+          `https://betwise-frontend-5uqq.vercel.app/login?error=auth_failed`
         );
     }
 
-    // ** UPDATE LAST LOGIN TIME FOR SOCIAL LOGIN **
-    await User.findByIdAndUpdate(user._id, { lastLogin: new Date() });
-
+    // Use the correct helper functions to generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
+    // Redirect to a dedicated frontend page with the tokens in the URL query
     res.redirect(
-      `${config.FRONTEND_URL}/social-auth-success?accessToken=${accessToken}&refreshToken=${refreshToken}`
+      `https://betwise-frontend-5uqq.vercel.app/social-auth-success?accessToken=${accessToken}&refreshToken=${refreshToken}`
     );
   } catch (error) {
     console.error("Social login callback error:", error);
+    // On server error, also redirect to the frontend login page
     res.redirect(
-      `${config.FRONTEND_URL}/login?error=server_error`
+      `https://betwise-frontend-5uqq.vercel.app/login?error=server_error`
     );
   }
 };
-
 
 // --- Password Management Functions ---
 exports.requestPasswordReset = async (req, res, next) => {
@@ -342,12 +334,16 @@ exports.requestPasswordReset = async (req, res, next) => {
         msg: "If your email address is registered with us, you will receive a password reset link shortly.",
       });
     } catch (emailError) {
+      // FIX: The error is logged on the server, but we still send a generic
+      // success response to the user to prevent email enumeration.
       console.error("EMAIL_SEND_ERROR:", emailError.message);
 
+      // Clean up the token since the email failed
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
       await user.save({ validateBeforeSave: false });
 
+      // Send the same generic response
       res.status(200).json({
         msg: "If your email address is registered with us, you will receive a password reset link shortly.",
       });

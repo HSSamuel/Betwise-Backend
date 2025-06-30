@@ -1,38 +1,17 @@
-const winston = require("winston");
+// In: Bet/Backend/middleware/errorMiddleware.js
+// This is a new file for centralized error handling.
+
 const config = require("../config/env");
-
-// Create a logger instance
-const logger = winston.createLogger({
-  level: "info",
-  format: winston.format.json(),
-  transports: [
-    // - Write all logs with importance level of `error` or less to `error.log`
-    // - Write all logs with importance level of `info` or less to `combined.log`
-    new winston.transports.File({ filename: "error.log", level: "error" }),
-    new winston.transports.File({ filename: "combined.log" }),
-  ],
-});
-
-// If we're not in production, then log to the `console` with a simple format.
-if (config.NODE_ENV !== "production") {
-  logger.add(
-    new winston.transports.Console({
-      format: winston.format.simple(),
-    })
-  );
-}
 
 const errorHandler = (err, req, res, next) => {
   // Use the status code from the error object, or default to 500 (Internal Server Error)
   const statusCode = err.statusCode || 500;
 
-  // Log the error using our new Winston logger
-  logger.error(err.message, {
-    statusCode,
-    stack: err.stack,
-    path: req.path,
-    method: req.method,
-  });
+  // In development mode, log the full error stack for easier debugging.
+  // In production, a more sophisticated logger like Winston or Sentry would be ideal.
+  if (config.NODE_ENV === "development") {
+    console.error(err.stack);
+  }
 
   // Default error response structure
   const errorResponse = {

@@ -107,7 +107,6 @@ router.delete(
   handleValidationErrors,
   deleteRanking
 );
-
 router.post(
   "/social-campaign",
   auth,

@@ -97,10 +97,6 @@ const gameSchema = new mongoose.Schema(
       },
       default: "upcoming",
     },
-    isTestGame: {
-      type: Boolean,
-      default: false,
-    },
     summary: {
       type: String,
       trim: true,
@@ -135,6 +131,5 @@ gameSchema.pre("save", function (next) {
 
 // Index for faster querying of games by date and status
 gameSchema.index({ matchDate: 1, status: 1 });
-gameSchema.index({ status: 1, league: 1, matchDate: 1 }); // For filtering games
 
 module.exports = mongoose.model("Game", gameSchema);

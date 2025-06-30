@@ -70,8 +70,8 @@ const BetSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+BetSchema.index({ user: 1, status: 1 });
 BetSchema.index({ status: 1, "selections.game": 1 }); // Helps find bets that include a specific game
-BetSchema.index({ user: 1, status: 1, createdAt: -1 }); // For fetching user's bet history
 
 BetSchema.statics.getRiskAnalysisForGame = function (gameId) {
   const riskPipeline = [

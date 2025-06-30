@@ -1,4 +1,3 @@
-// In: Bet/Backend/services/oddsService.js
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const config = require("../config/env");
 const TeamRanking = require("../models/TeamRanking"); // Import the Mongoose model

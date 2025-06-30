@@ -28,9 +28,6 @@ const {
 
 // --- Public Routes ---
 router.get("/", validateGetGames, handleValidationErrors, getGames);
-router.get("/", getGames);
-router.get("/live-feed", getLiveGames);
-router.get("/:id", getGameById);
 router.get("/live", getLiveGames);
 router.get(
   "/:id/odds-history",

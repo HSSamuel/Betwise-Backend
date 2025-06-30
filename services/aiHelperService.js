@@ -1,11 +1,10 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const config = require("../config/env"); // <-- IMPORT the new config
+const config = require("../config/env");
 
 if (!config.GEMINI_API_KEY) {
-  // <-- USE config
   throw new Error("GEMINI_API_KEY is not defined in the .env file.");
 }
-const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY); // <-- USE config
+const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
 
 exports.generateInterventionMessage = async (
   username,

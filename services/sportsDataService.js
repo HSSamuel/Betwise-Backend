@@ -4,7 +4,7 @@ const Game = require("../models/Game");
 const { generateOddsForGame } = require("./oddsService");
 const config = require("../config/env");
 const { resolveBetsForGame } = require("./betResolutionService");
-const { generateLiveOdds } = require("./aiLiveOddsService");
+const { generateLiveOdds } = require("./aiLiveOddsService"); // Corrected import
 const leaguesToSync = require("../config/leagues.json");
 
 // A comprehensive set of all known "live" statuses from the API-Football documentation
