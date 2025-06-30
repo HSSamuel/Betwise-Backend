@@ -24,6 +24,7 @@ const {
   validateAdjustOdds,
   getLiveGames,
   adjustOdds,
+  getGameDetails,
 } = require("../controllers/gameController");
 
 // --- Public Routes ---
@@ -90,5 +91,9 @@ router.patch(
   handleValidationErrors,
   adjustOdds
 );
+
+// --- ROUTE for getting full game details ---
+// This should be placed before the existing /:id route to be matched correctly.
+router.get("/:id/details", validateGameId, handleValidationErrors, getGameDetails);
 
 module.exports = router;

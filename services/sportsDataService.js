@@ -4,10 +4,9 @@ const Game = require("../models/Game");
 const { generateOddsForGame } = require("./oddsService");
 const config = require("../config/env");
 const { resolveBetsForGame } = require("./betResolutionService");
-const { generateLiveOdds } = require("./aiLiveOddsService"); // Corrected import
+const { generateLiveOdds } = require("./aiLiveOddsService");
 const leaguesToSync = require("../config/leagues.json");
 
-// A comprehensive set of all known "live" statuses from the API-Football documentation
 const LIVE_STATUSES = new Set([
   "1H",
   "HT",
@@ -32,7 +31,6 @@ const syncLiveAndFinishedGames = async (io) => {
     return;
   }
 
-  // Dynamically create the 'live' parameter string from your config file
   const leagueIds = leaguesToSync
     .map((l) => l.apiFootballId)
     .filter((id) => id)
@@ -50,7 +48,7 @@ const syncLiveAndFinishedGames = async (io) => {
       `https://v3.football.api-sports.io/fixtures`,
       {
         params: {
-          live: leagueIds, // Use the dynamically generated list of league IDs
+          live: leagueIds,
         },
         headers: { "x-apisports-key": config.APIFOOTBALL_KEY },
       }
@@ -87,11 +85,9 @@ const syncLiveAndFinishedGames = async (io) => {
       const awayGoals = fixture.goals.away;
       const scoreHasChanged =
         game.scores.home !== homeGoals || game.scores.away !== awayGoals;
-      // ** FIX: Added a check to see if the elapsed time has changed **
       const timeHasChanged =
         game.elapsedTime !== fixture.fixture.status.elapsed;
 
-      // Case 1: Game has finished
       if (newStatus === "FT" && game.status !== "finished") {
         const session = await mongoose.startSession();
         session.startTransaction();
@@ -99,7 +95,7 @@ const syncLiveAndFinishedGames = async (io) => {
           game.status = "finished";
           game.scores.home = homeGoals;
           game.scores.away = awayGoals;
-          game.elapsedTime = 90; // Set final time
+          game.elapsedTime = 90;
 
           if (homeGoals > awayGoals) game.result = "A";
           else if (awayGoals > homeGoals) game.result = "B";
@@ -117,6 +113,7 @@ const syncLiveAndFinishedGames = async (io) => {
             gameId: game._id,
             result: game.result,
             status: game.status,
+            scores: game.scores,
           });
         } catch (error) {
           await session.abortTransaction();
@@ -127,11 +124,8 @@ const syncLiveAndFinishedGames = async (io) => {
         } finally {
           session.endSession();
         }
-      }
-      // Case 2: Game is live and the status, score, or time has changed
-      else if (
+      } else if (
         LIVE_STATUSES.has(newStatus) &&
-        // ** FIX: Added the timeHasChanged condition to the check **
         (game.status !== "live" || scoreHasChanged || timeHasChanged)
       ) {
         game.status = "live";
@@ -139,12 +133,10 @@ const syncLiveAndFinishedGames = async (io) => {
         game.scores.away = awayGoals;
         game.elapsedTime = fixture.fixture.status.elapsed;
 
-        // ** Generate and update live odds **
         if (scoreHasChanged) {
-          // Only update odds if the score changes to reduce AI calls
           const newLiveOdds = await generateLiveOdds(game);
           if (newLiveOdds) {
-            game.odds = newLiveOdds; // Update the main odds object
+            game.odds = newLiveOdds;
             console.log(
               `[Live Odds] AI updated odds for ${game.homeTeam} vs ${game.awayTeam}:`,
               newLiveOdds
@@ -158,7 +150,6 @@ const syncLiveAndFinishedGames = async (io) => {
         console.log(
           `[Live Sync] ⚽ Score Update: ${game.homeTeam} ${game.scores.home} - ${game.scores.away} ${game.awayTeam} (${game.elapsedTime}')`
         );
-        // ** FIX: Emit the complete, updated game object **
         io.emit("gameUpdate", game.toObject());
       }
     }
@@ -188,6 +179,29 @@ const syncLiveAndFinishedGames = async (io) => {
   console.log("-----------------------------------------------------");
 };
 
+async function getFixtureEvents(fixtureId) {
+  if (!config.APIFOOTBALL_KEY) {
+    console.error("[Events] Error: APIFootball Key is missing.");
+    return [];
+  }
+  try {
+    const response = await axios.get(
+      `https://v3.football.api-sports.io/fixtures/events`,
+      {
+        params: { fixture: fixtureId },
+        headers: { "x-apisports-key": config.APIFOOTBALL_KEY },
+      }
+    );
+    return response.data.response || [];
+  } catch (error) {
+    console.error(
+      `[Events] Failed to fetch events for fixture ${fixtureId}:`,
+      error.message
+    );
+    return [];
+  }
+}
+
 const apiFootballProvider = {
   name: "API-Football",
   enabled: !!config.APIFOOTBALL_KEY,
@@ -214,10 +228,10 @@ const apiFootballProvider = {
           {
             params: {
               league: leagueId,
-              season: new Date().getFullYear(), // Use current year for the season
+              season: new Date().getFullYear(),
               from: fromDateStr,
               to: toDateStr,
-              status: "NS", // Not Started
+              status: "NS",
             },
             headers: { "x-apisports-key": config.APIFOOTBALL_KEY },
           }
@@ -362,4 +376,4 @@ const syncGames = async (source = "apifootball") => {
   }
 };
 
-module.exports = { syncGames, syncLiveAndFinishedGames };
+module.exports = { syncGames, syncLiveAndFinishedGames, getFixtureEvents };

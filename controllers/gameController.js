@@ -97,6 +97,14 @@ const validateSetResult = [
   body("result")
     .isIn(["A", "B", "Draw"])
     .withMessage("Result must be 'A', 'B', or 'Draw'."),
+  body("homeScore")
+    .isInt({ min: 0 })
+    .withMessage("Home score must be a non-negative integer.")
+    .toInt(),
+  body("awayScore")
+    .isInt({ min: 0 })
+    .withMessage("Away score must be a non-negative integer.")
+    .toInt(),
 ];
 
 const validateUpdateGame = [
@@ -236,24 +244,37 @@ const getGameById = async (req, res, next) => {
   res.json(game);
 };
 
+// --- UPDATE: Modify the setResult function ---
 const setResult = async (req, res, next) => {
   const { id } = req.params;
-  const { result } = req.body;
+  // Destructure new score fields from the body
+  const { result, homeScore, awayScore } = req.body;
+
   const session = await mongoose.startSession();
   session.startTransaction();
+
   try {
     const game = await Game.findById(id).session(session);
     if (!game) throw new Error("Game not found.");
+
     game.result = result;
     game.status = "finished";
+
+    // Save the new scores
+    game.scores = { home: homeScore, away: awayScore };
+
     await game.save({ session });
-    await resolveBetsForGame(game, session);
+    await resolveBetsForGame(game, session, req.io); // Pass io for real-time updates
+
     await session.commitTransaction();
+
     req.io.emit("gameResultUpdated", {
       gameId: game._id,
       result: game.result,
       status: game.status,
+      scores: game.scores, // Include scores in the update
     });
+
     res.json({
       msg: `Result for game ${game.homeTeam} vs ${game.awayTeam} set to '${result}'. Bets resolved.`,
       game,
@@ -416,6 +437,27 @@ const adjustOdds = async (req, res, next) => {
   }
 };
 
+const getGameDetails = async (req, res, next) => {
+  try {
+    const game = await Game.findById(req.params.id).lean();
+    if (!game) {
+      const err = new Error("Game not found.");
+      err.statusCode = 404;
+      return next(err);
+    }
+
+    let events = [];
+    if (game.externalApiId && game.externalApiId.startsWith("apif_")) {
+      const fixtureId = game.externalApiId.split("_")[1];
+      events = await getFixtureEvents(fixtureId);
+    }
+
+    res.json({ ...game, events });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   validateGetGames,
   validateCreateGame,
@@ -436,4 +478,5 @@ module.exports = {
   createMultipleGames,
   getLiveGames,
   adjustOdds,
+  getGameDetails,
 };
